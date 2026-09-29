@@ -1,3 +1,2 @@
-# 测试依赖
--r requirements.txt
+﻿-r requirements.txt
 pytest>=7.0,<9
