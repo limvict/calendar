@@ -17,6 +17,7 @@ from constants import (
     LUNAR_FESTIVALS, SOLAR_FESTIVALS, FESTIVAL_NAME_MAP,
     RED_TEXT_SET, MONTH_CN, NUM_CN_MAP, UPCOMING_REMIND_DAYS,
 )
+logger=get_logger()
 
 # 农历文字“类型”用显式常量代替布尔
 _CELL_NORMAL = "normal"       # 普通农历文字
@@ -228,7 +229,7 @@ class LunarCalendarWidget(QCalendarWidget):
         except Exception:
             # chinese_calendar 对超出其支持范围的年份会抛错（已知限制），
             # 整月 42 个单元格都会触发 → 降到 debug。真需要排查时开 DEBUG。
-            get_logger.debug(
+            logger.debug(
                 f"is_holiday 查询降级 date={qdate.toString('yyyy-MM-dd')}",
                 exc_info=True,
             )
@@ -246,7 +247,7 @@ class LunarCalendarWidget(QCalendarWidget):
             return False
         except Exception:
             # 同上：chinese_calendar 年份越界属已知降级路径
-            get_logger.debug(
+            logger.debug(
                 f"is_workday 查询降级 date={qdate.toString('yyyy-MM-dd')}",
                 exc_info=True,
             )
