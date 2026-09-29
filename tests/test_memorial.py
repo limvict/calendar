@@ -216,10 +216,11 @@ class TestMatchMemorialDate:
 class TestGetNextMemorialDateSolar:
 
     def test_same_day_returns_self(self):
-        mem = {"type": "solar", "repeat_type": REPEAT_YEAR,
-               "month": 3, "day": 15}
-        assert get_next_memorial_date(mem, date(2025, 3, 15)) == date(2025, 3, 15)
-
+        """公历每年重复：base_date 命中当天，include_base=True 应返回自身。"""
+        mem = {"type": "solar", "repeat_type": "year", "month": 3, "day": 15}
+        assert get_next_memorial_date(
+            mem, date(2025, 3, 15), include_base=True
+        ) == date(2025, 3, 15)
     def test_solar_yearly_after_date(self):
         mem = {"type": "solar", "repeat_type": REPEAT_YEAR,
                "month": 3, "day": 15}
@@ -254,10 +255,13 @@ class TestGetNextMemorialDateSolar:
         assert get_next_memorial_date(mem, date(2025, 4, 1)) == date(2025, 4, 30)
         assert get_next_memorial_date(mem, date(2025, 6, 1)) == date(2025, 6, 30)
         assert get_next_memorial_date(mem, date(2025, 9, 1)) == date(2025, 9, 30)
-
+        
     def test_monthly_same_day_returns_self(self):
-        mem = {"type": "solar", "repeat_type": REPEAT_MONTH, "day": 15}
-        assert get_next_memorial_date(mem, date(2025, 1, 15)) == date(2025, 1, 15)
+        """公历每月重复：base_date 命中当天，include_base=True 应返回自身。"""
+        mem = {"type": "solar", "repeat_type": "month", "day": 15}
+        assert get_next_memorial_date(
+            mem, date(2025, 1, 15), include_base=True
+        ) == date(2025, 1, 15)
 
     def test_monthly_rolls_to_next_month(self):
         mem = {"type": "solar", "repeat_type": REPEAT_MONTH, "day": 15}
@@ -277,16 +281,17 @@ class TestGetNextMemorialDateSolar:
         mem = {"type": "solar", "repeat_type": REPEAT_YEAR,
                "month": 3, "day": 15}
         assert get_next_memorial_date(mem, None) is None
-
+        
+    def test_same_weekday_returns_self(self):
+        """每周重复：base_date 命中当天，include_base=True 应返回自身。"""
+        mem = {"day": 1, "repeat_type": "week"}
+        assert get_next_memorial_date(
+            mem, date(2025, 9, 29), include_base=True
+        ) == date(2025, 9, 29)
 
 # ===================== get_next_memorial_date — 每周 =====================
 class TestGetNextMemorialDateWeekly:
     # 参考：2025-09-29 周一，10-01 周三，10-03 周五，10-08 周三，09-28 周日
-
-    def test_same_weekday_returns_self(self):
-        mem = {"repeat_type": REPEAT_WEEK, "day": 1}  # 周一
-        assert get_next_memorial_date(mem, date(2025, 9, 29)) == date(2025, 9, 29)
-
     def test_later_in_same_week(self):
         mem = {"repeat_type": REPEAT_WEEK, "day": 3}  # 周三
         assert get_next_memorial_date(mem, date(2025, 9, 29)) == date(2025, 10, 1)
@@ -321,8 +326,10 @@ class TestGetNextMemorialDateLunar:
         fake_lunar_env.add(date(2025, 1, 29), FakeLunar(2025, 1, 1))
         fake_lunar_env.add(date(2026, 2, 17), FakeLunar(2026, 1, 1))
         mem = {"type": "lunar", "repeat_type": REPEAT_YEAR,
-               "month": 1, "day": 1}
-        assert get_next_memorial_date(mem, date(2025, 1, 29)) == date(2025, 1, 29)
+           "month": 1, "day": 1}
+        assert get_next_memorial_date(
+            mem, date(2025, 1, 29), include_base=True
+        ) == date(2025, 1, 29)
 
     def test_yearly_leap_month_only(self, fake_lunar_env):
         # 闰六月十五只匹配闰月
@@ -342,15 +349,19 @@ class TestGetNextMemorialDateLunar:
         assert get_next_memorial_date(mem, date(2025, 1, 1)) is None
 
     def test_monthly_within_year(self, strict_lunar_env):
-        # 农历每月十五：base 之后的下一个十五
-        # 所有作为 base_date 传入的日期都必须注册 → 用严格模式
         strict_lunar_env.add(date(2025, 1, 14), FakeLunar(2024, 12, 15))
         strict_lunar_env.add(date(2025, 1, 15), FakeLunar(2024, 12, 16))
         strict_lunar_env.add(date(2025, 2, 12), FakeLunar(2025, 1, 15))
         strict_lunar_env.add(date(2025, 2, 13), FakeLunar(2025, 1, 16))
         strict_lunar_env.add(date(2025, 3, 14), FakeLunar(2025, 2, 15))
         mem = {"type": "lunar", "repeat_type": REPEAT_MONTH, "day": 15}
-        assert get_next_memorial_date(mem, date(2025, 1, 14)) == date(2025, 1, 14)
+
+        # base 命中当天 → 需要 include_base=True 才返回自身
+        assert get_next_memorial_date(
+            mem, date(2025, 1, 14), include_base=True
+        ) == date(2025, 1, 14)
+
+        # 以下两条 base 未命中当天，默认行为就是返回下一个
         assert get_next_memorial_date(mem, date(2025, 1, 15)) == date(2025, 2, 12)
         assert get_next_memorial_date(mem, date(2025, 2, 13)) == date(2025, 3, 14)
 
