@@ -18,7 +18,7 @@ except ImportError:
     winreg = None
     HAS_WINREG = False
 
-from config import config, get_resource_path, logger
+from config import config, get_resource_path, get_logger
 from utils import (
     HAS_CHNCAL, HAS_CHINESE_CAL, init_config_defaults, match_memorial_date,
     get_lunar_by_datetime,          # 【P1-3】新增

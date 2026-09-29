@@ -3,7 +3,7 @@ import os
 import json
 from PyQt6.QtCore import QObject, QDate, QDateTime, Qt, QStandardPaths
 from PyQt6.QtWidgets import QMessageBox, QFileDialog
-from config import ConfigManager, logger
+from config import ConfigManager, get_logger
 from utils import normalize_memorial, REPEAT_WEEK
 from event_bus import event_bus, EventType
 

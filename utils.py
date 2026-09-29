@@ -13,7 +13,7 @@
 import sys
 import ctypes
 
-from config import logger
+from config import get_logger
 
 # ===================== 平台级副作用 =====================
 # 放在这里而不是 lunar.py：utils 是本工程所有模块的公共入口，

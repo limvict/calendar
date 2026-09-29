@@ -7,7 +7,7 @@ from PyQt6.QtGui import (
     QFont, QColor, QTextCharFormat, QPainter, QPainterPath, QPen,
 )
 from PyQt6.QtWidgets import QCalendarWidget, QLabel
-from config import log_exception, logger
+from config import log_exception, get_logger
 from utils import (
     get_lunar_by_datetime, lunar_to_gregorian, match_memorial_date,
     HAS_CHNCAL, HAS_CHINESE_CAL, is_holiday, is_workday, qdate_to_pydate,
@@ -147,7 +147,7 @@ class LunarCalendarWidget(QCalendarWidget):
         except Exception:
             # 单点转换失败不影响整月渲染；cnlunar 本身失败时已返回 None，
             # 能走到这里基本是参数格式问题 —— 属预期降级，降到 debug。
-            logger.debug(
+            get_logger.debug(
                 f"实时农历转换失败 date={qdate.toString('yyyy-MM-dd')}",
                 exc_info=True,
             )
@@ -228,7 +228,7 @@ class LunarCalendarWidget(QCalendarWidget):
         except Exception:
             # chinese_calendar 对超出其支持范围的年份会抛错（已知限制），
             # 整月 42 个单元格都会触发 → 降到 debug。真需要排查时开 DEBUG。
-            logger.debug(
+            get_logger.debug(
                 f"is_holiday 查询降级 date={qdate.toString('yyyy-MM-dd')}",
                 exc_info=True,
             )
@@ -246,7 +246,7 @@ class LunarCalendarWidget(QCalendarWidget):
             return False
         except Exception:
             # 同上：chinese_calendar 年份越界属已知降级路径
-            logger.debug(
+            get_logger.debug(
                 f"is_workday 查询降级 date={qdate.toString('yyyy-MM-dd')}",
                 exc_info=True,
             )

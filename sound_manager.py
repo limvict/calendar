@@ -1,7 +1,7 @@
 # coding: utf-8
 import os
 from PyQt6.QtCore import QObject
-from config import logger
+from config import get_logger
 
 # Windows 原生音效；非 Windows 平台降级为静默
 try:
@@ -10,7 +10,7 @@ try:
 except ImportError:
     winsound = None
     HAS_WINSOUND = False
-
+logger = get_logger()
 
 class SoundManager(QObject):
     """Windows原生音效播放：零格式兼容问题、无额外线程、异步不卡UI"""

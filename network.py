@@ -4,8 +4,9 @@ import threading
 from collections import deque
 from PyQt6.QtCore import QObject, pyqtSignal, QMutex, QUrl, QTimer, pyqtSlot
 from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
-from config import logger
+from config import get_logger
 
+logger=get_logger()
 
 class HolidayNetWorker(QObject):
     """网络节假日数据拉取器：多CDN降级 + 退避重试 + 自动跟随重定向 + 年份排队"""

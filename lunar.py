@@ -9,7 +9,9 @@ from datetime import date, datetime, timedelta
 from functools import lru_cache
 from typing import Optional
 
-from config import logger, log_exception
+from config import get_logger, log_exception
+
+logger=get_logger()
 
 __all__ = [
     "HAS_CHINESE_CAL", "HAS_CHNCAL",

@@ -1,7 +1,7 @@
 # coding: utf-8
 from datetime import datetime
 from PyQt6.QtCore import QObject, QDate, QTimer, QThread
-from config import ConfigManager, load_holiday_cache, save_holiday_cache, logger
+from config import ConfigManager, load_holiday_cache, save_holiday_cache, get_logger
 from network import HolidayNetWorker
 from event_bus import event_bus, EventType
 

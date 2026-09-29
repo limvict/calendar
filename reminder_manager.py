@@ -1,11 +1,12 @@
 # coding: utf-8
 from datetime import datetime
 from PyQt6.QtCore import QObject, QTimer, QDate, QTime
-from config import ConfigManager, logger
+from config import ConfigManager, get_logger
 from constants import DEFAULT_THEME
 from utils import get_next_memorial_date
 from dialogs import MemorialRemindDialog
 
+logger=get_logger()
 
 class ReminderManager(QObject):
     """提醒管理器：统一处理纪念日判定与调度"""

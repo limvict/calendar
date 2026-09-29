@@ -6,8 +6,10 @@ import calendar
 from datetime import date, datetime, timedelta
 from typing import Optional
 
-from config import logger
+from config import get_logger
 from lunar import get_lunar_by_datetime, lunar_to_gregorian, HAS_CHNCAL
+
+logger=get_logger()
 
 __all__ = [
     "REPEAT_YEAR", "REPEAT_MONTH", "REPEAT_WEEK",

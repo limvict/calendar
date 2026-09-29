@@ -26,14 +26,38 @@ CONFIG_SAVE_DEBOUNCE_MS = 500
 LOG_MAX_BYTES = 5 * 1024 * 1024
 LOG_BACKUP_COUNT = 3
 
+_logger = None
+
+
+def _get_log_dir() -> str:
+    # 1) 测试/自定义优先：允许用环境变量指定日志目录
+    override = os.getenv("MYCALENDAR_LOG_DIR")
+    if override:
+        return override
+
+    # 2) 按平台取标准目录
+    if sys.platform == "win32":
+        base = os.getenv("APPDATA") or os.path.expanduser("~")
+    elif sys.platform == "darwin":
+        base = os.path.expanduser("~/Library/Application Support")
+    else:  # linux / 其他
+        base = os.getenv("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+
+    return os.path.join(base, "MyCalendarApp")
+
 
 def init_logger():
-    appdata = os.getenv("APPDATA")
-    log_dir = os.path.join(appdata, "MyCalendarApp")
+    log_dir = _get_log_dir()
     os.makedirs(log_dir, exist_ok=True)
     log_path = os.path.join(log_dir, "calendar_log.txt")
-    _logger = logging.getLogger()
-    _logger.setLevel(logging.INFO)
+
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+
+    # 避免重复添加 handler（模块可能被多次导入/测试重复调用）
+    if any(isinstance(h, RotatingFileHandler) for h in logger.handlers):
+        return logger
+
     handler = RotatingFileHandler(
         log_path,
         maxBytes=LOG_MAX_BYTES,
@@ -43,7 +67,15 @@ def init_logger():
     formatter = logging.Formatter(
         "%(asctime)s - %(levelname)s - %(message)s")
     handler.setFormatter(formatter)
-    _logger.addHandler(handler)
+    logger.addHandler(handler)
+    return logger
+
+
+def get_logger():
+    """懒加载 logger，首次调用时才真正创建日志文件。"""
+    global _logger
+    if _logger is None:
+        _logger = init_logger()
     return _logger
 
 
@@ -52,13 +84,11 @@ def log_exception(msg: str):
     记录异常堆栈。仅在真实异常上下文存在时打印 traceback，
     避免 "NoneType: None" 噪音。
     """
+    logger = get_logger()
     if sys.exc_info()[0] is not None:
         logger.error(f"{msg}\n{traceback.format_exc()}")
     else:
         logger.error(msg)
-
-
-logger = init_logger()
 
 
 def get_resource_path(relative_path: str) -> str:
@@ -71,9 +101,15 @@ def get_resource_path(relative_path: str) -> str:
 
 
 def _get_app_data_dir() -> str:
-    """获取应用数据目录（Windows使用%APPDATA%，避开Program Files权限问题）"""
-    appdata = os.getenv("APPDATA")
-    data_dir = os.path.join(appdata, "MyCalendarApp")
+    """获取应用数据目录（跨平台，避开权限问题）"""
+    if sys.platform == "win32":
+        base = os.getenv("APPDATA") or os.path.expanduser("~")
+    elif sys.platform == "darwin":
+        base = os.path.expanduser("~/Library/Application Support")
+    else:
+        base = os.getenv("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+
+    data_dir = os.path.join(base, "MyCalendarApp")
     os.makedirs(data_dir, exist_ok=True)
     return data_dir
 
@@ -89,10 +125,6 @@ def get_holiday_cache_path() -> str:
 class ConfigManager:
     """
     配置管理器单例：统一读写、版本迁移、防抖保存。
-
-    【注意】本类依赖模块级 logger。若在 config.py 完全加载前构造实例
-    （如循环 import），logger 可能尚未定义。目前模块底部才创建
-    `config = ConfigManager()`，顺序安全；新增入口时需保持同样约束。
     """
     _instance: Optional["ConfigManager"] = None
     _save_timer: Optional[Timer] = None
@@ -115,7 +147,7 @@ class ConfigManager:
                 with open(cfg_path, "r", encoding="utf-8") as f:
                     self._cfg = json.load(f)
             except Exception as e:
-                logger.warning(f"读取配置失败: {e}")
+                get_logger().warning(f"读取配置失败: {e}")
                 self._cfg = {}
         else:
             self._cfg = {}
@@ -195,7 +227,7 @@ class ConfigManager:
             with open(cfg_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            logger.error(f"保存配置失败: {e}")
+            get_logger().error(f"保存配置失败: {e}")
 
     def export_to_file(self, path: str) -> bool:
         try:
@@ -205,7 +237,7 @@ class ConfigManager:
                 json.dump(data, f, ensure_ascii=False, indent=2)
             return True
         except Exception as e:
-            logger.error(f"导出配置失败: {e}")
+            get_logger().error(f"导出配置失败: {e}")
             return False
 
     def import_from_file(self, path: str) -> bool:
@@ -218,7 +250,7 @@ class ConfigManager:
             self._flush_save()
             return True
         except Exception as e:
-            logger.error(f"导入配置失败: {e}")
+            get_logger().error(f"导入配置失败: {e}")
             return False
 
     @property
@@ -240,7 +272,7 @@ def load_config():
 def save_config(cfg: dict):
     """兼容旧 API：整体替换配置（含迁移 + 立即落盘）。"""
     if not isinstance(cfg, dict):
-        logger.warning("save_config 收到非 dict 参数，已忽略")
+        get_logger().warning("save_config 收到非 dict 参数，已忽略")
         return
     with config._lock:
         config._cfg = copy.deepcopy(cfg)
@@ -255,7 +287,7 @@ def load_holiday_cache() -> dict:
             with open(cache_path, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception as e:
-            logger.warning(f"读取节假日缓存失败: {e}")
+            get_logger().warning(f"读取节假日缓存失败: {e}")
     return {}
 
 
@@ -265,4 +297,4 @@ def save_holiday_cache(cache_data: dict):
         with open(cache_path, "w", encoding="utf-8") as f:
             json.dump(cache_data, f, ensure_ascii=False, indent=2)
     except Exception as e:
-        logger.error(f"保存节假日缓存失败: {e}")
+        get_logger().error(f"保存节假日缓存失败: {e}")
