@@ -1,0 +1,16 @@
+﻿__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.idea/
+.vscode/
+*.log
+calendar_log.txt
+holiday_cache.json
+config.json
+*_backup.json
+installer_output/
+*.spec
+*.bak
+*.tmp
