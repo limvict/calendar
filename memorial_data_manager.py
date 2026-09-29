@@ -7,6 +7,7 @@ from config import ConfigManager, get_logger
 from utils import normalize_memorial, REPEAT_WEEK
 from event_bus import event_bus, EventType
 
+logger=get_logger()
 
 class MemorialDataManager(QObject):
     """纪念日数据管理：备份、恢复、导入导出、去重合并"""

@@ -5,6 +5,7 @@ from config import ConfigManager, load_holiday_cache, save_holiday_cache, get_lo
 from network import HolidayNetWorker
 from event_bus import event_bus, EventType
 
+logger=get_logger()
 
 class HolidayManager(QObject):
     """节假日数据管理：缓存、网络拉取、自动刷新、过期清理"""

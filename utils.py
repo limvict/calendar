@@ -15,6 +15,8 @@ import ctypes
 
 from config import get_logger
 
+logger=get_logger()
+
 # ===================== 平台级副作用 =====================
 # 放在这里而不是 lunar.py：utils 是本工程所有模块的公共入口，
 # 能保证 DPI 感知 / AppUserModelID 在任何 Qt 窗口创建前执行一次。

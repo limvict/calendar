@@ -34,6 +34,7 @@ from style_manager import StyleManager
 from reminder_manager import ReminderManager
 from event_bus import event_bus, EventType
 
+logger=get_logger()
 
 class DragCalendarWidget(QWidget):
     """主窗口：UI容器 + 跨模块调度"""

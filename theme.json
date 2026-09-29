@@ -1,6 +1,5 @@
 {
-    "bg_color": "#222222",
-    "fg_color": "#eeeeee",
-    "btn_bg": "#1890ff",
-    "font_size": 13
+  "bg_main": "#F7F3ED",
+  "calendar_header_bg": "#A7B8A1",
+  "today_bg": "#7C947E"
 }
