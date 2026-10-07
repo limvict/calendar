@@ -1,5 +1,4 @@
 # coding: utf-8
-import weakref
 import threading
 from typing import Callable, Any, Dict, List, Tuple
 from PyQt6.QtCore import QObject, pyqtSignal
@@ -25,31 +24,30 @@ def _same_callable(a, b) -> bool:
 
 class EventBus(QObject):
     """
-    全局事件总线：发布-订阅模式，解耦各模块间通信
-    所有跨模块交互均通过事件总线中转，避免模块间直接依赖
-    """
-    _instance: "EventBus" = None
-    # 【Bug 3 修复】类级初始化锁，避免多线程首次构造时状态被覆盖
-    _init_lock = threading.Lock()
+    事件总线：发布-订阅模式，解耦各模块间通信。
 
-    # 通用事件信号：(事件类型标识, 事件参数字典)
+    【P2 修复】原实现把"单例"逻辑放在 __new__ 里（跳过 __init__），
+    对 QObject 是隐患：Qt 侧线程亲和性 / 内部状态依赖 __init__ 正常
+    执行；未来若给本类加实例级 pyqtSignal 或 moveToThread 都会踩坑。
+
+    现在：
+      - EventBus 只做"订阅/发布"的真实工作，每次构造都是独立实例。
+      - 全局唯一由模块级 _EventBusProxy 保证（见文件末尾）。
+      - 外部 API 完全兼容：`from event_bus import event_bus` 拿到的是
+        代理对象，subscribe / unsubscribe / publish 用法不变。
+    """
     _global_signal = pyqtSignal(str, dict)
 
-    def __new__(cls):
-        if cls._instance is None:
-            with cls._init_lock:
-                if cls._instance is None:
-                    inst = super().__new__(cls)
-                    inst._subscriber_map: Dict[str, List[Tuple[Callable, Callable]]] = {}
-                    inst._lock = threading.RLock()
-                    cls._instance = inst
-        return cls._instance
+    def __init__(self):
+        super().__init__()
+        self._subscriber_map: Dict[str, List[Tuple[Callable, Callable]]] = {}
+        self._lock = threading.RLock()
 
     def subscribe(self, event_type: str, slot: Callable[[dict], Any]) -> None:
         """
         订阅指定事件
         :param event_type: 事件类型字符串
-        :param slot: 回调槽函数，接收一个dict参数
+        :param slot: 回调槽函数，接收一个 dict 参数
         """
         def _wrapper(etype: str, data: dict):
             if etype == event_type:
@@ -67,7 +65,7 @@ class EventBus(QObject):
         """
         with self._lock:
             entries = self._subscriber_map.get(event_type, [])
-            # 【Bug 2 修复】用 _same_callable 判断，并清理所有重复订阅项（不 break）
+            # 用 _same_callable 判断，并清理所有重复订阅项（不 break）
             removed_indices = []
             for i, (s, w) in enumerate(entries):
                 if _same_callable(s, slot):
@@ -88,6 +86,39 @@ class EventBus(QObject):
         :param kwargs: 事件参数，以关键字参数形式传入
         """
         self._global_signal.emit(event_type, kwargs)
+
+
+class _EventBusProxy:
+    """
+    模块级事件总线代理：懒创建 + 线程安全 + 与原 API 完全兼容。
+
+    为什么要代理而不是直接模块级 EventBus()：
+      - 模块 import 时立刻构造 QObject 有 Qt 时序风险（主线程 / QApplication
+        尚未创建）；懒加载可以让首次 publish/subscribe 时才真正实例化。
+      - 代理本身不做 QObject，没有线程亲和性约束，可被任何线程安全访问。
+    """
+
+    __slots__ = ("_impl", "_lock")
+
+    def __init__(self):
+        self._impl: "EventBus | None" = None
+        self._lock = threading.Lock()
+
+    def _ensure(self) -> EventBus:
+        if self._impl is None:
+            with self._lock:
+                if self._impl is None:
+                    self._impl = EventBus()
+        return self._impl
+
+    def subscribe(self, event_type: str, slot: Callable[[dict], Any]) -> None:
+        return self._ensure().subscribe(event_type, slot)
+
+    def unsubscribe(self, event_type: str, slot: Callable[[dict], Any]) -> None:
+        return self._ensure().unsubscribe(event_type, slot)
+
+    def publish(self, event_type: str, **kwargs) -> None:
+        return self._ensure().publish(event_type, **kwargs)
 
 
 # 全局事件类型常量定义
@@ -112,5 +143,5 @@ class EventType:
     THEME_CHANGED = "theme_changed"              # 主题变更
 
 
-# 全局单例实例
-event_bus = EventBus()
+# 全局单例代理
+event_bus = _EventBusProxy()

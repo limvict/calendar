@@ -2,14 +2,14 @@
 import os
 import sys
 import ctypes  # 用于Windows DWM系统级修复
-import datetime
-from PyQt6.QtCore import Qt, QTimer, QDate, pyqtSlot
-from PyQt6.QtGui import QFont, QIcon, QColor, QPainter
+from functools import partial
+from PyQt6.QtCore import Qt, QTimer, QDate
+from PyQt6.QtGui import QIcon, QColor
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QStackedWidget,
     QPushButton, QMenu, QMessageBox, QDialog, QLabel, QGraphicsDropShadowEffect,
 )
-
+import weakref
 # Windows 注册表（开机自启）；非 Windows 平台降级
 try:
     import winreg
@@ -182,31 +182,34 @@ class DragCalendarWidget(QWidget):
     def paintEvent(self, event):
         super().paintEvent(event)
 
+    def _subscriptions(self):
+        """(事件类型, 回调) 声明表，订阅/退订共用，避免两处漏改不一致。"""
+        return [
+            (EventType.HOLIDAY_UPDATED,       self._on_holiday_updated),
+            (EventType.MEMORIAL_CHANGED,      self._on_memorial_changed),
+            (EventType.WINDOW_SHOW,           self._on_window_show),
+            (EventType.WINDOW_QUIT,           self._on_window_quit),
+            (EventType.WINDOW_TOGGLE_TOPMOST, self._on_tray_topmost),
+            (EventType.OPEN_SETTINGS,         self._on_open_settings),
+            (EventType.BACKUP_MEMORIAL,       self._on_backup_memorial),
+            (EventType.RESTORE_MEMORIAL,      self._on_restore_memorial),
+        ]
+
     def _connect_signals(self):
-        """
-        【Bug 18】全部改为具名方法订阅。
-        原来用 lambda 订阅，退出时无法 unsubscribe，会持续持有 self 引用；
-        配合 Bug 2（unsubscribe 失效），长期运行后会隐性泄漏。
-        """
-        event_bus.subscribe(EventType.HOLIDAY_UPDATED, self._on_holiday_updated)
-        event_bus.subscribe(EventType.MEMORIAL_CHANGED, self._on_memorial_changed)
-        event_bus.subscribe(EventType.WINDOW_SHOW, self._on_window_show)
-        event_bus.subscribe(EventType.WINDOW_QUIT, self._on_window_quit)
-        event_bus.subscribe(EventType.WINDOW_TOGGLE_TOPMOST, self._on_tray_topmost)
-        event_bus.subscribe(EventType.OPEN_SETTINGS, self._on_open_settings)
-        event_bus.subscribe(EventType.BACKUP_MEMORIAL, self._on_backup_memorial)
-        event_bus.subscribe(EventType.RESTORE_MEMORIAL, self._on_restore_memorial)
+        """全部使用具名方法订阅，退出时可精确 unsubscribe。"""
+        for evt, cb in self._subscriptions():
+            event_bus.subscribe(evt, cb)
 
     def _disconnect_signals(self):
-        """退出时主动解除事件订阅，避免闭包/引用悬挂到解释器退出"""
-        event_bus.unsubscribe(EventType.HOLIDAY_UPDATED, self._on_holiday_updated)
-        event_bus.unsubscribe(EventType.MEMORIAL_CHANGED, self._on_memorial_changed)
-        event_bus.unsubscribe(EventType.WINDOW_SHOW, self._on_window_show)
-        event_bus.unsubscribe(EventType.WINDOW_QUIT, self._on_window_quit)
-        event_bus.unsubscribe(EventType.WINDOW_TOGGLE_TOPMOST, self._on_tray_topmost)
-        event_bus.unsubscribe(EventType.OPEN_SETTINGS, self._on_open_settings)
-        event_bus.unsubscribe(EventType.BACKUP_MEMORIAL, self._on_backup_memorial)
-        event_bus.unsubscribe(EventType.RESTORE_MEMORIAL, self._on_restore_memorial)
+        """
+        退出时主动解除事件订阅，避免闭包/引用悬挂到解释器退出。
+        逐条 try：某一条失败不影响其余订阅的清理。
+        """
+        for evt, cb in self._subscriptions():
+            try:
+                event_bus.unsubscribe(evt, cb)
+            except Exception as e:
+                logger.warning(f"取消订阅 {evt} 失败: {e}")
 
     # ===== 事件总线回调：统一接收 dict，忽略参数 =====
     def _on_window_show(self, _data=None):
@@ -237,9 +240,11 @@ class DragCalendarWidget(QWidget):
         super().mouseReleaseEvent(event)
 
     def closeEvent(self, event):
-        self.window_state.close_event(event)
         if not self.tray_mgr.available:
             self.quit_app()
+            event.accept()
+            return
+        self.window_state.close_event(event) 
 
     def contextMenuEvent(self, event):
         menu = QMenu()
@@ -256,7 +261,11 @@ class DragCalendarWidget(QWidget):
         action = menu.exec(event.globalPos())
 
         if action == act_min:
-            self.hide()
+            # 无托盘时 hide() 会导致窗口失联（无法再唤醒），改为最小化。
+            if self.tray_mgr.available:
+                self.hide()
+            else:
+                self.showMinimized()
         elif action == act_backup:
             self.memorial_mgr.backup()
         elif action == act_restore:
@@ -284,13 +293,19 @@ class DragCalendarWidget(QWidget):
         self.cal_title.setText(f"{self.cal.yearShown()}年{self.cal.monthShown()}月")
 
     def open_settings_dialog(self):
+        # 进入对话框前先取快照：既用于初始化控件，也用于"取消"时还原
+        snapshot = config.snapshot()
+        orig_opacity = float(snapshot.get("opacity", 0.92))
+        orig_topmost = bool(snapshot.get("topmost", False))
+
+        mem_cfg = snapshot.get("memorial_cfg") or {}
+        mem_remind = bool(mem_cfg.get("enable_remind", True))
+        mem_sound = bool(mem_cfg.get("sound_enable", True))
+
         auto_start = self._check_auto_start()
-        mem_remind = bool(config.get_nested("memorial_cfg", "enable_remind", default=True))
-        mem_sound = bool(config.get_nested("memorial_cfg", "sound_enable", default=True))
         dlg = SettingDialog(
-            config.raw, auto_start,
-            config.get("topmost", False),
-            config.get("opacity", 0.92),
+            snapshot, auto_start,
+            orig_topmost, orig_opacity,
             mem_remind, mem_sound, self,
         )
         dlg.preview_opacity_changed.connect(self.window_state.set_opacity)
@@ -299,39 +314,64 @@ class DragCalendarWidget(QWidget):
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self._apply_settings(dlg)
         else:
-            self.window_state.set_opacity(config.get("opacity", 0.92))
-            self.window_state.set_topmost(config.get("topmost", False))
-            self.tray_mgr.update_topmost_check(bool(config.get("topmost", False)))
-
+            # 取消：还原预览效果。全局 config 从未被对话框改动，无需回滚。
+            self.window_state.set_opacity(orig_opacity)
+            self.window_state.set_topmost(orig_topmost)
+            self.tray_mgr.update_topmost_check(orig_topmost)
+                  
     def _apply_settings(self, dlg: SettingDialog):
-        """应用设置变更"""
-        config.set("topmost", dlg.get_topmost_status(), save=False)
-        config.set("opacity", dlg.get_opacity(), save=False)
-        config.set("memorial_days", dlg.get_memorial_list(), save=False)
+        """
+        应用设置变更。
 
-        memorial_cfg = config.get("memorial_cfg", {})
-        memorial_cfg["enable_remind"] = bool(dlg.get_mem_remind())
-        memorial_cfg["sound_enable"] = bool(dlg.get_mem_sound())
-        config.set("memorial_cfg", memorial_cfg, save=False)
-        config.save_debounced()
+        以对话框内部的 self.cfg 快照为基准整体替换全局配置，
+        这样即使用户在对话框内"导入配置"过（快照被整份替换），
+        所有字段也能一致生效。
+        """
+        # dlg.cfg 已是深拷贝副本，直接原地补齐派生字段即可
+        new_cfg = dlg.cfg
+        new_cfg["topmost"] = bool(dlg.get_topmost_status())
+        new_cfg["opacity"] = float(dlg.get_opacity())
+        new_cfg["memorial_days"] = dlg.get_memorial_list()
+
+        mem_cfg = dict(new_cfg.get("memorial_cfg") or {})
+        mem_cfg["enable_remind"] = bool(dlg.get_mem_remind())
+        mem_cfg["sound_enable"] = bool(dlg.get_mem_sound())
+        new_cfg["memorial_cfg"] = mem_cfg
+
+        # 一次性替换 + 立即落盘（replace_all 内部会 deepcopy）
+        config.replace_all(new_cfg, save=False)
+        config.flush()
 
         event_bus.publish(EventType.MEMORIAL_CHANGED)
+        event_bus.publish(EventType.SETTINGS_CHANGED)
         self.tray_mgr.update_topmost_check(dlg.get_topmost_status())
 
         want_auto = dlg.get_auto_start_status()
         if want_auto != self._check_auto_start():
             self._apply_auto_start(want_auto)
-        event_bus.publish(EventType.SETTINGS_CHANGED)
 
-    def _on_holiday_updated(self, data: dict):
+    def _on_holiday_updated(self, data=None):
+        if not isinstance(data, dict) or "data" not in data:
+            logger.warning("HOLIDAY_UPDATED 收到非法 payload: %r", data)
+            return
         self.cal.set_net_holiday(data["data"])
 
     def _on_memorial_changed(self, _data: dict = None):
+        # 【#7】本回调走"静默重排"：check_today=False，不做当日检查。
+        # 目的：程序启动、批量配置刷新等非用户主动场景不应弹提醒窗。
+        #
+        # 需要"立即检查今日命中"的场景（用户点"确定"应用设置、
+        # 从文件恢复纪念日数据等显式动作），由调用方在 publish 之后
+        # 再显式调用一次 reminder_mgr.reschedule(force=True, check_today=True)。
+        # 详见 memorial_data_manager.restore()。
         self.cal.set_memorial_list(config.get("memorial_days", []))
         self.reminder_mgr.reschedule(force=True, check_today=False)
 
-    def _on_tray_topmost(self, data: dict):
-        enable = data["enable"]
+    def _on_tray_topmost(self, data=None):
+        if not isinstance(data, dict) or "enable" not in data:
+            logger.warning("WINDOW_TOGGLE_TOPMOST 收到非法 payload: %r", data)
+            return
+        enable = bool(data["enable"])
         self.window_state.set_topmost(enable)
         config.set("topmost", enable, save=False)
         self.tray_mgr.update_topmost_check(enable)
@@ -340,20 +380,27 @@ class DragCalendarWidget(QWidget):
         self.showNormal()
         self.raise_()
         self.activateWindow()
-
+        
     def _check_dependencies(self):
         warn_msgs = []
         if not HAS_CHNCAL:
             warn_msgs.append("cnlunar未安装，农历、节气功能不可用")
         if not HAS_CHINESE_CAL:
             warn_msgs.append("chinese_calendar未安装，本地节假日判断不可用")
-        if warn_msgs:
-            QTimer.singleShot(
-                100,
-                lambda: msg_warn(self, "依赖缺失",
-                    "\n".join(warn_msgs) + "\npip install cnlunar chinese_calendar"
-                )
-            )
+        if not warn_msgs:
+            return
+        ref = weakref.ref(self)
+        def _fire():
+            w = ref()
+            if w is not None:
+                w._show_dep_warning(warn_msgs)
+        QTimer.singleShot(100, _fire)   # ← 只调一次
+
+    def _show_dep_warning(self, warn_msgs):
+        msg_warn(
+            self, "依赖缺失",
+            "\n".join(warn_msgs) + "\npip install cnlunar chinese_calendar"
+        )
 
     def _check_auto_start(self) -> bool:
         if sys.platform != "win32" or not HAS_WINREG:
@@ -423,15 +470,15 @@ class DragCalendarWidget(QWidget):
             parts_html.append(f"<span style='color:#2E7D32'>节气：{term_text}</span>")
         if holiday_unique:
             parts_html.append(
-                f"<span style='color:#C96068'>节日：{' '.join(holiday_unique)}</span>"
+                f"<span style='color:#C96068'>节日：{''.join(holiday_unique)}</span>"
             )
         if memorial_text:
             parts_html.append(
-                f"<span style='color:#D47026'>纪念日：{' '.join(memorial_text)}</span>"
+                f"<span style='color:#D47026'>纪念日：{''.join(memorial_text)}</span>"
             )
 
         self.info_label.setTextFormat(Qt.TextFormat.RichText)
-        self.info_label.setText(" &nbsp;&nbsp;｜&nbsp;&nbsp; ".join(parts_html))
+        self.info_label.setText(" &nbsp;｜&nbsp; ".join(parts_html))
 
     def _apply_auto_start(self, enable: bool):
         if sys.platform != "win32" or not HAS_WINREG:
@@ -464,7 +511,7 @@ class DragCalendarWidget(QWidget):
             QMessageBox.critical(self, "错误", f"设置开机自启失败：{str(e)}")
 
     def quit_app(self):
-        # 【Bug 18】退出前解除所有事件订阅
+        # 退出前解除所有事件订阅
         try:
             self._disconnect_signals()
         except Exception as e:
@@ -474,7 +521,11 @@ class DragCalendarWidget(QWidget):
             self.holiday_mgr.shutdown()
         except Exception as e:
             logger.warning(f"关闭节假日线程失败: {e}")
-        config._flush_save()
+        # 强制同步落盘：避免防抖定时器未触发就退出导致配置丢失/半写。
+        try:
+            config.flush()
+        except Exception as e:
+            logger.warning(f"刷写配置失败: {e}")
         QApplication.quit()
 
 

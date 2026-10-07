@@ -8,16 +8,20 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtWidgets import QCalendarWidget, QLabel
 from config import log_exception, get_logger
+# 【#4】清理未使用导入：移除 lunar_to_gregorian / normalize_memorial
+#       / REPEAT_YEAR / REPEAT_MONTH / REPEAT_WEEK。
+#       这些符号在本文件内完全没有引用，删除可减少读者对
+#       "本模块还负责纪念日计算"的误判（那是 memorial.py 的职责）。
 from utils import (
-    get_lunar_by_datetime, lunar_to_gregorian, match_memorial_date,
+    get_lunar_by_datetime, match_memorial_date,
     HAS_CHNCAL, HAS_CHINESE_CAL, is_holiday, is_workday, qdate_to_pydate,
-    normalize_memorial, REPEAT_YEAR, REPEAT_MONTH, REPEAT_WEEK,
 )
+# 【#4】UPCOMING_REMIND_DAYS 本文件未使用，一并移除。
 from constants import (
     LUNAR_FESTIVALS, SOLAR_FESTIVALS, FESTIVAL_NAME_MAP,
-    RED_TEXT_SET, MONTH_CN, NUM_CN_MAP, UPCOMING_REMIND_DAYS,
+    RED_TEXT_SET, MONTH_CN, NUM_CN_MAP,
 )
-logger=get_logger()
+logger = get_logger()
 
 # 农历文字“类型”用显式常量代替布尔
 _CELL_NORMAL = "normal"       # 普通农历文字
@@ -50,8 +54,12 @@ class LunarCalendarWidget(QCalendarWidget):
         self._cell_cache: Dict[int, dict] = {}
         self._cached_year = -1
         self._cached_month = -1
-        # 【日志改造】paintCell / get_lunar_cell_text 出真 bug 时每个 key
+        # 【日志改造】paintCell / get_lunar_cell_text 出真 bug 时按 (位置, 日期)
         # 只上报一次，避免 42 个单元格同时失败把日志刷爆。
+        # 【#3】key 现在是形如 "paintCell:2025-01-01" 的复合键，
+        #       而不是固定字符串 —— 保证"每一天的每一次失败"都能留下记录，
+        #       而不是整月整年只报第一条。set 里的字符串总量仍然可控
+        #       （每月最多 ~42 条），长期运行不会无界增长。
         self._reported_errors: set = set()
         # 字体 + 尺寸集中到 _apply_theme
         self._apply_theme(theme)
@@ -63,27 +71,33 @@ class LunarCalendarWidget(QCalendarWidget):
     def _apply_theme(self, theme: dict):
         """
         构造与换主题时共用：字体 + 尺寸常量。
-        【Item 2】dot_size / tag_size / cell_radius 改为从主题读取。
+        dot_size / tag_size / cell_radius 从主题读取。
         """
         font_family = theme.get("font_family", "微软雅黑").split(",")[0].strip()
         font_size = theme.get("font_size", 10)
         self._day_font = QFont(font_family, font_size)
         # 避免极小字号导致字体无法显示
-        self._small_font = QFont(font_family, max(6, font_size - 4))
+        small_size = int(max(font_size - 4, font_size * 0.5))
+        self._small_font = QFont(font_family, small_size)
 
         self.dot_size = int(theme.get("dot_size", 6))
         self.tag_size = int(theme.get("tag_size", 14))
         self.cell_radius = int(theme.get("cell_corner_radius", 8))
 
-    # ---------------- 【日志改造】异常去重上报 ----------------
+    # ---------------- 异常去重上报 ----------------
     def _log_exception_once(self, key: str, message: str):
         """
-        同一 key 的异常在整个 widget 生命周期内只上报一次。
+        同一 key 在整个 widget 生命周期内只上报一次。
 
         为什么需要：paintCell / get_lunar_cell_text 是逐单元格调用的，
         一次重绘就会跑 42 次。一旦出现真 bug，42 条 traceback 会淹没
-        其它有用的日志。按 key 去重既保留了「有 bug 要发现」的能力，
-        也不会刷屏。
+        其它有用的日志。
+
+        【#3】调用方必须把「位置 + 日期」拼进 key，例如
+        key=f"paintCell:{qdate.toString('yyyy-MM-dd')}"。
+        如果 key 只用固定字符串（如 "paintCell"），整月整年只会记录
+        第一条失败，排查时看不到影响面；带日期后每天每条失败各留一条，
+        日志量仍然可控。
         """
         if key in self._reported_errors:
             return
@@ -126,17 +140,28 @@ class LunarCalendarWidget(QCalendarWidget):
         self.update()
 
     def update_theme(self, new_theme: dict):
+        # 【#6】主题只影响绘制阶段（颜色 / 字号 / 圆角），
+        # 不影响 _cell_cache 中缓存的语义数据（文字 / 类型 / 是否节假日），
+        # 因此这里刻意不重建缓存，避免主题切换时做无谓的农历转换。
+        # 如果未来把"颜色"也塞进 _cell_cache，务必在这里补一次
+        # self._rebuild_cell_cache(...)，否则会静默显示旧配色。
         self._theme = new_theme
         self._apply_theme(new_theme)
         self._fix_week_header_color()
         self.update()
 
     def _fix_week_header_color(self):
-        fmt = QTextCharFormat()
-        color_str = self._theme.get("weekend_header_red", "#d62728")
-        fmt.setForeground(QColor(color_str))
-        self.setWeekdayTextFormat(Qt.DayOfWeek.Saturday, fmt)
-        self.setWeekdayTextFormat(Qt.DayOfWeek.Sunday, fmt)
+        red_fmt = QTextCharFormat()
+        red_fmt.setForeground(QColor(self._theme.get("weekend_header_red", "#d62728")))
+
+        normal_fmt = QTextCharFormat()
+        normal_fmt.setForeground(QColor(self._theme.get("calendar_header_text", "#000000")))
+
+        for dow in (Qt.DayOfWeek.Monday, Qt.DayOfWeek.Tuesday, Qt.DayOfWeek.Wednesday,
+                    Qt.DayOfWeek.Thursday, Qt.DayOfWeek.Friday):
+            self.setWeekdayTextFormat(dow, normal_fmt)
+        self.setWeekdayTextFormat(Qt.DayOfWeek.Saturday, red_fmt)
+        self.setWeekdayTextFormat(Qt.DayOfWeek.Sunday, red_fmt)
 
     def get_day_lunar_obj(self, qdate: QDate):
         if not HAS_CHNCAL:
@@ -148,7 +173,7 @@ class LunarCalendarWidget(QCalendarWidget):
         except Exception:
             # 单点转换失败不影响整月渲染；cnlunar 本身失败时已返回 None，
             # 能走到这里基本是参数格式问题 —— 属预期降级，降到 debug。
-            get_logger.debug(
+            logger.debug(
                 f"实时农历转换失败 date={qdate.toString('yyyy-MM-dd')}",
                 exc_info=True,
             )
@@ -183,10 +208,14 @@ class LunarCalendarWidget(QCalendarWidget):
                     return "除夕", _CELL_RED
 
             # 法定节日（名称映射后若在 RED_TEXT_SET 中则标红）
-            f1 = lunar.get_legalHolidays()
-            if f1:
-                name = FESTIVAL_NAME_MAP.get(f1, f1)
-                return name, (_CELL_RED if name in RED_TEXT_SET else _CELL_NORMAL)
+            # 【P1 修复】get_legalHolidays() 返回 list，不能直接做 dict key。
+            f_list = lunar.get_legalHolidays()
+            if f_list:
+                raw = f_list[0] if isinstance(f_list, (list, tuple)) else f_list
+                if raw and raw != "无":
+                    name = FESTIVAL_NAME_MAP.get(raw, raw)
+                    return name, (_CELL_RED if name in RED_TEXT_SET
+                                  else _CELL_NORMAL)
 
             # 农历传统节日（全部红色）
             if not is_leap and (lunar_month, lunar_day) in LUNAR_FESTIVALS:
@@ -210,11 +239,10 @@ class LunarCalendarWidget(QCalendarWidget):
             else:
                 return NUM_CN_MAP.get(str(lunar_day), str(lunar_day)), _CELL_NORMAL
         except Exception:
-            # 这里能触发说明是真正的 bug（KeyError / 类型错误等），
-            # 但每个单元格都会重复 → 按 key 去重
+            date_str = qdate.toString('yyyy-MM-dd')
             self._log_exception_once(
-                "get_lunar_cell_text",
-                f"解析农历文本失败 date={qdate.toString('yyyy-MM-dd')}",
+                f"get_lunar_cell_text:{date_str}",
+                f"解析农历文本失败 date={date_str}",
             )
             return "", _CELL_NORMAL
 
@@ -263,15 +291,15 @@ class LunarCalendarWidget(QCalendarWidget):
                 return True
         return False
 
-    def paintCell(self, painter: QPainter, rect: QRect, date: QDate):
+    def paintCell(self, painter: QPainter, rect: QRect, qdate: QDate):
         # 【P0-1】painter.save() 与 finally 里的 restore() 严格配对。
         # 原实现在 try 内 save、try 内 restore，中间任何异常都会导致
         # restore 被跳过，画笔/字体/renderHint 泄漏到后续单元格。
         painter.save()
         try:
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-            is_current_month = (date.year() == self.yearShown()
-                                and date.month() == self.monthShown())
+            is_current_month = (qdate.year() == self.yearShown()
+                                and qdate.month() == self.monthShown())
 
             # ===== 相邻月：填充 + 绘制后直接 return，restore 由 finally 负责 =====
             if not is_current_month:
@@ -289,18 +317,18 @@ class LunarCalendarWidget(QCalendarWidget):
                 painter.drawText(
                     rect.adjusted(4, 3, -4, -9),
                     Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop,
-                    str(date.day()),
+                    str(qdate.day()),
                 )
                 return
 
             # ===== 当前月：以下逻辑保持原样 =====
-            is_selected = (date == self.selectedDate())
-            is_today = (date == QDate.currentDate())
+            is_selected = (qdate == self.selectedDate())
+            is_today = (qdate == QDate.currentDate())
 
-            key = date.toJulianDay()
+            key = qdate.toJulianDay()
             cell = self._cell_cache.get(key)
             if cell is None:
-                cell = self._calc_cell_data(date)
+                cell = self._calc_cell_data(qdate)
                 self._cell_cache[key] = cell
 
             kind = cell["kind"]
@@ -335,7 +363,7 @@ class LunarCalendarWidget(QCalendarWidget):
             painter.drawText(
                 day_rect,
                 Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop,
-                str(date.day()),
+                str(qdate.day()),
             )
 
             # 农历小字
@@ -371,31 +399,38 @@ class LunarCalendarWidget(QCalendarWidget):
                     "班",
                 )
 
-            # 圆点
+            # 圆点：默认右上，若同一天有「班」则改画左上
             dot_color = None
             if kind == _CELL_MEMORIAL:
                 dot_color = QColor(self._theme.get("memorial_orange", "#ff7824"))
             elif is_legal_hol:
                 dot_color = QColor(self._theme.get("festival_red", "#d62728"))
+
             if dot_color is not None:
                 painter.setBrush(dot_color)
                 painter.setPen(QPen(Qt.PenStyle.NoPen))
-                x = rect.right() - self.dot_size - 4
+                if is_weekend_work:
+                    x = rect.left() + 4
+                else:
+                    x = rect.right() - self.dot_size - 4
                 y = rect.top() + 4
                 painter.drawEllipse(x, y, self.dot_size, self.dot_size)
 
         except Exception:
+            # 【#3】key 带上日期，避免整月只记录第一条失败。
+            date_str = qdate.toString('yyyy-MM-dd')
             self._log_exception_once(
-                "paintCell",
-                f"paintCell单元格渲染异常 date={date.toString('yyyy-MM-dd')}",
+                f"paintCell:{date_str}",
+                f"paintCell单元格渲染异常 date={date_str}",
             )
         finally:
-            # 【修复】painter 若已被销毁（极端情况下 Qt 提前回收），
+            # painter 若已被销毁（极端情况下 Qt 提前回收），
             # restore 会抛 RuntimeError 并掩盖原始异常，这里吞掉。
             try:
                 painter.restore()
             except RuntimeError:
                 pass
+
     def set_net_holiday(self, holiday_data: dict):
         try:
             self.net_holiday_data = holiday_data

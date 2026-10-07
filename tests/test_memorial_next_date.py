@@ -1,6 +1,5 @@
 # tests/test_memorial_next_date.py
 from datetime import date
-import pytest
 from memorial import (
     REPEAT_WEEK, REPEAT_MONTH, REPEAT_YEAR,
     get_next_memorial_date, normalize_memorial,

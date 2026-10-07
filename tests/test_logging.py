@@ -62,7 +62,7 @@ class TestLunarModuleLogging:
             def Lunar(*args, **kwargs):
                 raise ValueError("模拟 cnlunar 内部错误")
 
-        monkeypatch.setattr(lunar, "cnlunar", FakeCnlunar)
+        monkeypatch.setattr(lunar, "cnlunar", FakeCnlunar, raising=False)
         _get_lunar_cached.cache_clear()
 
         with caplog.at_level(logging.DEBUG):
@@ -85,7 +85,7 @@ class TestLunarModuleLogging:
             def Lunar(*args, **kwargs):
                 raise ValueError("模拟 cnlunar 内部错误")
 
-        monkeypatch.setattr(lunar, "cnlunar", FakeCnlunar)
+        monkeypatch.setattr(lunar, "cnlunar", FakeCnlunar, raising=False)
         _get_lunar_cached.cache_clear()
 
         with caplog.at_level(logging.DEBUG):

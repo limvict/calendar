@@ -53,22 +53,27 @@ class HolidayNetWorker(QObject):
     def fetch_year_holiday(self, year: int):
         """拉取单年节假日数据；若正在拉取则入队，完成后自动取下一个"""
         self.mutex.lock()
-        if self.is_fetching:
-            if year not in self._pending_years:
-                self._pending_years.append(year)
+        try:
+            if self.is_fetching:
+                if year not in self._pending_years:
+                    self._pending_years.append(year)
+                logger.info(f"节假日拉取中，{year}年已入队等待")
+                return
+            self.is_fetching = True
+            # 新一轮拉取前清除 abort 标记
+            self._abort_event.clear()
+            # 【#11】target_year / try_idx 与 is_fetching 是一组共享状态，
+            # 必须在同一把锁内更新，否则 _finish_with_result 可能读到
+            # 上一个年份的 target_year 或旧重试位置。
+            self.target_year = year
+            self.try_idx = 0
+        finally:
             self.mutex.unlock()
-            logger.info(f"节假日拉取中，{year}年已入队等待")
-            return
-        self.is_fetching = True
-        # 新一轮拉取前清除 abort 标记
-        self._abort_event.clear()
-        self.mutex.unlock()
 
         self._setup_manager()
         self._abort_current_reply(mark_abort=False)
-        self.target_year = year
-        self.try_idx = 0
         self._request_next_cdn()
+
 
     def fetch_years_holiday(self, years: list):
         """批量拉取多年数据（依次排队）"""

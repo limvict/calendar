@@ -25,17 +25,18 @@ class WindowStateManager:
             self.window.move(px, py)
 
     def set_opacity(self, value: float):
+        value = max(0.0, min(1.0, float(value)))
         self.window.setWindowOpacity(value)
 
+
     def set_topmost(self, enable: bool):
-        flags = self.window.windowFlags()
         was_visible = self.window.isVisible()
-        if enable:
-            self.window.setWindowFlags(flags | Qt.WindowType.WindowStaysOnTopHint)
-        else:
-            self.window.setWindowFlags(flags & ~Qt.WindowType.WindowStaysOnTopHint)
+        geo = self.window.saveGeometry() if was_visible else None
+        self.window.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, enable)
         if was_visible:
             self.window.show()
+            if geo is not None:
+                self.window.restoreGeometry(geo)
 
     def toggle_topmost(self):
         current = self.config.get("topmost", False)
@@ -51,16 +52,13 @@ class WindowStateManager:
     def mouse_move_event(self, event):
         if event.buttons() & Qt.MouseButton.LeftButton and self._is_dragging:
             new_pos = event.globalPosition().toPoint() - self._drag_pos
-            # 【Bug 7】原实现固定用主屏几何做边界钳制，副屏在主屏右侧时
-            # 窗口会被"吸回"主屏。这里按候选位置所在屏幕取几何；
-            # 若光标不在任何屏幕（极端多屏间隙），退回主屏。
-            screen = QApplication.screenAt(new_pos) or QApplication.primaryScreen()
+            screen = QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
             if screen is not None:
                 geo = screen.availableGeometry()
                 new_pos.setX(max(geo.left() + 100 - self.window.width(),
-                                 min(new_pos.x(), geo.right() - 100)))
+                             min(new_pos.x(), geo.right() - 100)))
                 new_pos.setY(max(geo.top() + 100 - self.window.height(),
-                                 min(new_pos.y(), geo.bottom() - 100)))
+                             min(new_pos.y(), geo.bottom() - 100)))
             self.window.move(new_pos)
             event.accept()
 
@@ -71,15 +69,20 @@ class WindowStateManager:
             self.config.set("pos_x", geo.left(), save=False)
             self.config.set("pos_y", geo.top(), save=False)
             self.config.save_debounced()
+            event.accept()
 
     def close_event(self, event):
-        """关闭窗口最小化到托盘，无托盘则退出"""
+        """
+        关闭窗口 → 最小化到托盘。
+        无托盘场景由 main.py 的 closeEvent 分支负责调用 quit_app。
+        注意：Qt 的 closeEvent 不使用返回值，这里的语义完全靠
+        event.ignore() 表达。
+        """
         event.ignore()
         self.window.hide()
-        return False
 
     def save_position(self):
-        """手动保存当前位置"""
         geo = self.window.frameGeometry()
         self.config.set("pos_x", geo.left(), save=False)
         self.config.set("pos_y", geo.top(), save=False)
+        self.config.flush()

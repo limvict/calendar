@@ -1,5 +1,6 @@
 # coding: utf-8
 import copy
+import json
 import calendar
 from PyQt6.QtCore import Qt, pyqtSignal, QDate
 from PyQt6.QtWidgets import (
@@ -12,6 +13,11 @@ from utils import (
     REPEAT_YEAR, REPEAT_MONTH, REPEAT_WEEK,
     normalize_memorial, get_next_memorial_date,
 )
+
+# ===================== 纪念日列表排序常量 =====================
+# 无法计算下次发生日期的纪念日排到最后。
+# 取值需远大于任何真实"距今天数"，避免与正常条目冲突。
+_NO_NEXT_DATE_RANK = 10 ** 6
 
 # ===================== 基础消息弹窗基类 =====================
 class _BaseMsgBox(QMessageBox):
@@ -142,8 +148,14 @@ class AddMemorialDialog(QDialog):
             self.spin_day.setRange(1, 7)
             self.spin_day.setSuffix("  (1=周一, 7=周日)")
             self.spin_month.setEnabled(False)
-            # 【修复】每周重复是纯公历概念，强制公历并禁用农历选项
+            # 【#19】每周重复是纯公历概念，强制公历并禁用农历选项。
+            # 阻断 toggled 信号，避免 setChecked 触发 _on_type_changed
+            # 再次进入 _update_day_range 造成递归驱动。
+            self.radio_solar.blockSignals(True)
+            self.radio_lunar.blockSignals(True)
             self.radio_solar.setChecked(True)
+            self.radio_solar.blockSignals(False)
+            self.radio_lunar.blockSignals(False)
             self.radio_lunar.setEnabled(False)
             self.chk_leap.setEnabled(False)
             self.chk_leap.setChecked(False)
@@ -162,16 +174,54 @@ class AddMemorialDialog(QDialog):
         repeat_type = self.combo_repeat.currentData()
         is_solar = self.radio_solar.isChecked()
 
-        if is_solar and repeat_type == REPEAT_YEAR:
+        # 【P2 修复】按"周期 × 公历/农历"补齐四类组合的校验，
+        # 原实现只覆盖了"公历 + 每年"，其它三种能被写入非法值：
+        #   - 农历 + 每年/每月：日 > 30 会被 normalize_memorial 静默 clamp 到 30
+        #   - 公历 + 每月：日 > 28 会在 2 月按月末收敛（设计如此，不阻断）
+        if repeat_type == REPEAT_YEAR:
             month = self.spin_month.value()
             day = self.spin_day.value()
-            if not QDate.isValid(2024, month, day):
-                _, last_day = calendar.monthrange(2024, month)
-                msg_warn(
-                    self, "提示",
-                    f"{month}月没有{day}日，请输入 1~{last_day} 之间的日期"
-                )
-                return
+            if is_solar:
+                if not QDate.isValid(2024, month, day):
+                    _, last_day = calendar.monthrange(2024, month)
+                    msg_warn(
+                        self, "提示",
+                        f"{month}月没有{day}日，请输入 1~{last_day} 之间的日期"
+                    )
+                    return
+            else:
+                # 农历：日上限 30（农历月份最多 30 天）。
+                # 精确校验"该农历月是否存在该日"需要构建农历索引，
+                # 对 UI 层太重；只做范围校验，运行期由 normalize_memorial
+                # 的 clamp + get_next_memorial_date 的降级路径兜底。
+                if day > 30:
+                    msg_warn(
+                        self, "提示",
+                        "农历日期最大为 30 日（农历每月最多 30 天）"
+                    )
+                    return
+
+        elif repeat_type == REPEAT_MONTH:
+            day = self.spin_day.value()
+            if is_solar:
+                # 公历每月：29/30/31 日在某些月份不存在，会按月末收敛。
+                # 这是设计行为（与 memorial.py 一致），只做非阻断提示。
+                if day > 28:
+                    reply = QMessageBox.question(
+                        self, "提示",
+                        f"每月 {day} 日在部分月份不存在，"
+                        f"届时将自动按该月最后一天提醒。\n是否继续？",
+                        QMessageBox.StandardButton.Yes
+                        | QMessageBox.StandardButton.No,
+                        QMessageBox.StandardButton.Yes,
+                    )
+                    if reply != QMessageBox.StandardButton.Yes:
+                        return
+            else:
+                if day > 30:
+                    msg_warn(self, "提示", "农历日期最大为 30 日")
+                    return
+        # REPEAT_WEEK：spin_day 已被 _update_day_range 限制在 1~7，无需校验
 
         self.accept()
 
@@ -263,17 +313,32 @@ class MemorialDialog(QDialog):
         btn_box.rejected.connect(self.reject)
 
     def _sort_by_date(self):
-        """按距离今日的天数排序，最近的置顶；统一走 get_next_memorial_date"""
+        """
+        排序规则（三级）：
+          1. 启用项排在禁用项之前
+          2. 同类中按"距下次发生日天数"升序
+          3. 无法计算下次日期的排到最后
+
+        单条数据异常不应中断整体排序，故在 key 函数内 try/except。
+        """
         from datetime import date
         today = date.today()
 
-        def _days_left(item: dict) -> int:
-            target = get_next_memorial_date(item, today, include_base=True)
-            if target is None:
-                return 99999
-            return (target - today).days
+        def _sort_key(item: dict):
+            # 启用优先：0 在前，1 沉底
+            disabled_rank = 0 if item.get("enabled", True) else 1
 
-        self.memorial_list.sort(key=_days_left)
+            try:
+                target = get_next_memorial_date(item, today, include_base=True)
+            except Exception:
+                target = None
+
+            if target is None:
+                return (disabled_rank, _NO_NEXT_DATE_RANK)
+
+            return (disabled_rank, (target - today).days)
+
+        self.memorial_list.sort(key=_sort_key)
 
     def refresh_list(self):
         self.list_widget.clear()
@@ -311,6 +376,10 @@ class MemorialDialog(QDialog):
             new_item = dlg.get_data()
             self.memorial_list.append(new_item)
             self.refresh_list()
+            # 排序后新条目位置不定，需按字段反查行号。
+            # 注意：若存在同名字段的老条目，命中第一条，这是可接受的
+            # UI 行为；如需精确定位，应让 normalize_memorial 打 _normalized
+            # 标记并改用身份比较（改动面较大，暂不引入）。
             for row in range(self.list_widget.count()):
                 item = self.memorial_list[row]
                 if (item.get("name") == new_item.get("name")
@@ -377,19 +446,34 @@ class MemorialDialog(QDialog):
 
 # ===================== 设置弹窗 =====================
 class SettingDialog(QDialog):
+    """
+    设置对话框。
+
+    设计约定：
+    - self.cfg 是唯一可写数据源（构造时深拷贝一份）。
+      对话框只改 self.cfg，不触碰全局 config。
+    - 用户点“确定”后由 main 侧调用 _apply_settings(dlg) 统一写回；
+      点“取消”则丢弃 self.cfg，全局配置不受影响。
+    - 导入配置时只覆盖 self.cfg 并刷新控件，同样不直接改全局 config。
+    """
     preview_opacity_changed = pyqtSignal(float)
     preview_topmost_changed = pyqtSignal(bool)
 
     def __init__(self, cfg, auto_start_state, topmost_state, opacity,
                  memorial_remind, memorial_sound, parent=None):
         super().__init__(parent)
-        self.cfg = cfg
-        self._auto_start_state = auto_start_state
-        self._topmost_state = topmost_state
-        self._opacity_val = opacity
+        # 深拷贝以防调用方传入内部引用；后续所有改动都落在这个副本上。
+        self.cfg = copy.deepcopy(cfg) if isinstance(cfg, dict) else {}
+        self.cfg.setdefault("memorial_days", [])
+        self.cfg.setdefault("memorial_cfg", {})
+
+        self._auto_start_state = bool(auto_start_state)
+        self._topmost_state = bool(topmost_state)
+        self._opacity_val = float(opacity)
         self.memorial_remind = bool(memorial_remind)
         self.memorial_sound = bool(memorial_sound)
         self.parent_win = parent
+
         self.setWindowTitle("设置")
         self.resize(440, 460)
         self.setStyleSheet("""
@@ -407,23 +491,30 @@ class SettingDialog(QDialog):
         }
         QPushButton:hover{background:#8fa089;}
         """)
+
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(20, 20, 20, 20)
         main_layout.setSpacing(12)
 
+        # ---------- 通用设置 ----------
         group_general = QGroupBox("通用设置")
         lay_general = QGridLayout(group_general)
         lay_general.setSpacing(10)
+
         self.chk_autostart = QCheckBox("Windows开机自启")
-        self.chk_autostart.setChecked(auto_start_state)
+        self.chk_autostart.setChecked(self._auto_start_state)
+
         self.chk_topmost = QCheckBox("窗口置顶")
-        self.chk_topmost.setChecked(topmost_state)
+        self.chk_topmost.setChecked(self._topmost_state)
         self.chk_topmost.toggled.connect(
             lambda v: self.preview_topmost_changed.emit(v))
+
         self.chk_mem_remind = QCheckBox("启用纪念日提醒")
         self.chk_mem_remind.setChecked(self.memorial_remind)
+
         self.chk_mem_sound = QCheckBox("提醒时播放提示音")
         self.chk_mem_sound.setChecked(self.memorial_sound)
+
         lay_general.addWidget(self.chk_autostart, 0, 0)
         lay_general.addWidget(self.chk_topmost, 1, 0)
         lay_general.addWidget(self.chk_mem_remind, 2, 0)
@@ -435,6 +526,7 @@ class SettingDialog(QDialog):
         self.slider_op.setValue(int(opacity * 100))
         self.lbl_op_val = QLabel(f"{int(opacity * 100)}%")
         self.slider_op.valueChanged.connect(self._on_slider_change)
+
         self.lay_op = QHBoxLayout()
         self.lay_op.addWidget(lbl_op)
         self.lay_op.addWidget(self.slider_op)
@@ -443,6 +535,7 @@ class SettingDialog(QDialog):
 
         main_layout.addWidget(group_general)
 
+        # ---------- 数据管理 ----------
         group_data = QGroupBox("数据管理")
         lay_data = QHBoxLayout(group_data)
         self.btn_export = QPushButton("导出配置")
@@ -464,38 +557,77 @@ class SettingDialog(QDialog):
         btn_box.rejected.connect(self.reject)
         main_layout.addWidget(btn_box)
 
-        self.mem_result = copy.deepcopy(cfg.get("memorial_days", []))
-
+    # ---------- 透明度滑块 ----------
     def _on_slider_change(self, v: int):
         self._opacity_val = v / 100
         self.lbl_op_val.setText(f"{v}%")
         self.preview_opacity_changed.emit(self._opacity_val)
 
+    # ---------- 导出：导出对话框当前快照（含未提交修改） ----------
     def _export_config(self):
         path, _ = QFileDialog.getSaveFileName(
             self, "导出配置", "calendar_config.json", "JSON文件 (*.json)")
-        if path:
-            from config import config
-            if config.export_to_file(path):
-                msg_info(self, "成功", "配置已导出")
-            else:
-                msg_error(self, "失败", "导出失败")
+        if not path:
+            return
+        try:
+            # 导出当前快照，用户所见即所得；
+            # 不依赖全局 config，避免“导出的是旧值”。
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(self.cfg, f, ensure_ascii=False, indent=2)
+            msg_info(self, "成功", "配置已导出")
+        except Exception as e:
+            msg_error(self, "失败", f"导出失败\n{e}")
 
+    # ---------- 导入：只改对话框快照，不碰全局 config ----------
     def _import_config(self):
         path, _ = QFileDialog.getOpenFileName(
             self, "导入配置", "", "JSON文件 (*.json)")
-        if path:
-            from config import config
-            if config.import_from_file(path):
-                msg_info(self, "成功", "配置已导入，重启生效")
-            else:
-                msg_error(self, "失败", "导入失败，文件格式错误")
+        if not path:
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                raise ValueError("根节点不是 dict")
+        except Exception as e:
+            msg_error(self, "失败", f"导入失败，文件格式错误\n{e}")
+            return
 
+        self.cfg = data
+        self.cfg.setdefault("memorial_days", [])
+        self.cfg.setdefault("memorial_cfg", {})
+        self._reload_from_cfg()
+        msg_info(self, "成功", "配置已载入，点“确定”后生效")
+
+    def _reload_from_cfg(self):
+        """
+        导入配置后刷新各控件显示。
+        注意：setChecked / setValue 会触发 toggled / valueChanged，
+        进而 emit 预览信号——这是预期行为（让用户先看到效果）。
+        """
+        self.chk_topmost.setChecked(bool(self.cfg.get("topmost", False)))
+
+        mem_cfg = self.cfg.get("memorial_cfg") or {}
+        self.chk_mem_remind.setChecked(bool(mem_cfg.get("enable_remind", True)))
+        self.chk_mem_sound.setChecked(bool(mem_cfg.get("sound_enable", True)))
+
+        # 自启状态来自注册表，不跟随导入文件
+        self.chk_autostart.setChecked(self._auto_start_state)
+
+        try:
+            op = float(self.cfg.get("opacity", 0.92))
+        except (TypeError, ValueError):
+            op = 0.92
+        op = max(0.6, min(1.0, op))
+        self.slider_op.setValue(int(op * 100))
+
+    # ---------- 纪念日管理：直接读写 self.cfg ----------
     def open_mem_dialog(self):
-        dlg = MemorialDialog(self.mem_result, self)
+        dlg = MemorialDialog(self.cfg.get("memorial_days", []), self)
         if dlg.exec():
-            self.mem_result = dlg.get_result()
+            self.cfg["memorial_days"] = dlg.get_result()
 
+    # ---------- 结果读取（供 main 侧 _apply_settings 使用） ----------
     def get_auto_start_status(self) -> bool:
         return self.chk_autostart.isChecked()
 
@@ -506,14 +638,14 @@ class SettingDialog(QDialog):
         return self._opacity_val
 
     def get_memorial_list(self):
-        return self.mem_result
+        return self.cfg.get("memorial_days", [])
 
     def get_mem_remind(self) -> bool:
         return self.chk_mem_remind.isChecked()
 
     def get_mem_sound(self) -> bool:
         return self.chk_mem_sound.isChecked()
-
+    
 # ===================== 纪念日提醒弹窗 =====================
 class MemorialRemindDialog(QDialog):
     def __init__(self, memorial_list, theme, parent=None):

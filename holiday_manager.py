@@ -53,10 +53,14 @@ class HolidayManager(QObject):
 
     def fetch_current_year(self):
         """拉取当年节假日，12月自动预取下一年"""
+        # 【#10】去掉 12 月的 QTimer.singleShot(2000, ...) 延迟。
+        # HolidayNetWorker 内部用 _pending_years 队列串行处理，
+        # 后 emit 的年份会自然排在当年之后执行；人为加 2 秒延迟只会
+        # 让"当年请求失败重试期间下一年请求插队"的时序更难推理。
         y = QDate.currentDate().year()
         self._net_worker.request_fetch.emit(y)
         if QDate.currentDate().month() == 12:
-            QTimer.singleShot(2000, lambda: self._net_worker.request_fetch.emit(y + 1))
+            self._net_worker.request_fetch.emit(y + 1)
 
     def _on_net_ready(self, year: int, net_data: dict):
         if not net_data or year <= 0:
@@ -79,11 +83,14 @@ class HolidayManager(QObject):
         """安全关闭网络线程"""
         self._refresh_timer.stop()
         if self._net_worker:
-            # 【Bug 19】worker 侧已改为 threading.Event，
-            # 这里调用 set() 是线程安全的，不再依赖"程序收尾"的侥幸。
             self._net_worker.request_abort()
         if self._net_thread:
             self._net_thread.quit()
             if not self._net_thread.wait(3000):
                 self._net_thread.terminate()
                 self._net_thread.wait()
+            self._net_thread.deleteLater()
+            self._net_thread = None
+        if self._net_worker:
+            self._net_worker.deleteLater()
+            self._net_worker = None

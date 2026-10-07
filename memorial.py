@@ -9,7 +9,7 @@ from typing import Optional
 from config import get_logger
 from lunar import get_lunar_by_datetime, lunar_to_gregorian, HAS_CHNCAL
 
-logger=get_logger()
+logger = get_logger()
 
 __all__ = [
     "REPEAT_YEAR", "REPEAT_MONTH", "REPEAT_WEEK",
@@ -24,6 +24,16 @@ REPEAT_WEEK = "week"
 # 合法取值白名单
 _VALID_REPEAT_TYPES = (REPEAT_YEAR, REPEAT_MONTH, REPEAT_WEEK)
 _VALID_TYPES = ("solar", "lunar")
+
+# 【P0 修复】农历"每年重复"向后搜索的年份窗口。
+# 农历新年最晚可到公历 2 月下旬，因此用「基准日的农历年」及「农历年+1」
+# 两个窗口即可覆盖任何一次"下一次的该农历月日"。
+_LUNAR_YEAR_LOOKAHEAD = 2
+
+# 【P1 修复】农历"每月重复"向后搜索的农历月窗口。
+# 原 6 个月在极端情况（连续若干小月 + 目标日为月尾 30）下可能取不到，
+# 直接返回 None 导致整月不提醒。13 个月足以跨过任何一年农历循环。
+_LUNAR_MONTH_LOOKAHEAD = 13
 
 
 def _to_pydate(qdate) -> date:
@@ -64,8 +74,8 @@ def normalize_memorial(mem: dict) -> dict:
         )
         mem["repeat_type"] = REPEAT_YEAR
 
-    # 【修复】每周重复是纯公历概念，强制 type='solar'，避免 UI 允许
-    # “农历 + 每周重复”后行为与用户预期不符。
+    # 每周重复是纯公历概念，强制 type='solar'，避免 UI 允许
+    # "农历 + 每周重复"后行为与用户预期不符。
     if mem["repeat_type"] == REPEAT_WEEK:
         if mem.get("type") != "solar":
             logger.warning(
@@ -108,8 +118,13 @@ def normalize_memorial(mem: dict) -> dict:
                 day = min(day, 28)
         mem["day"] = day
 
+    # 【#8】advance_days 上限 365。
+    # UI 的 QSpinBox 已限制 30，但配置文件是 JSON，可被手工改成任意大值，
+    # 而 ReminderManager._calc_next_timestamp 会按 advance_days 逐个
+    # 日期推进枚举；无上限时单条纪念日可让调度循环数万次。
+    # 365 覆盖"提前一年提醒"的极端需求，同时把最坏复杂度钉死。
     try:
-        mem["advance_days"] = max(0, int(mem["advance_days"]))
+        mem["advance_days"] = max(0, min(365, int(mem["advance_days"])))
     except (TypeError, ValueError):
         mem["advance_days"] = 0
 
@@ -162,7 +177,7 @@ def _next_week_date(base_date: date, target_weekday: int) -> date:
     【修复】返回严格大于 base_date 的下一个目标星期。
 
     原实现 `diff = (day - current) % 7` 在 day==current 时返回 base_date
-    本身，导致 reminder_manager 里“今天还没到提醒时刻”的场景被 break
+    本身，导致 reminder_manager 里"今天还没到提醒时刻"的场景被 break
     跳过，该纪念日当天提醒彻底丢失。
     """
     current = base_date.weekday() + 1  # 1=周一 ~ 7=周日
@@ -170,6 +185,98 @@ def _next_week_date(base_date: date, target_weekday: int) -> date:
     if diff == 0:
         diff = 7
     return base_date + timedelta(days=diff)
+
+
+def _next_solar_monthly(base_date: date, day: int) -> Optional[date]:
+    """公历"每月重复"：返回 >= base_date（或 > base_date）的下一次。"""
+    for offset in (0, 1):
+        total = base_date.month + offset - 1
+        y = base_date.year + total // 12
+        m = total % 12 + 1
+        _, last_day = calendar.monthrange(y, m)
+        target = date(y, m, min(day, last_day))
+        if target > base_date:
+            return target
+    return None
+
+
+def _next_solar_yearly(base_date: date, month: int, day: int) -> Optional[date]:
+    """公历"每年重复"：返回 >= base_date（或 > base_date）的下一次。"""
+    for y in (base_date.year, base_date.year + 1):
+        _, last_day = calendar.monthrange(y, month)
+        target = date(y, month, min(day, last_day))
+        if target > base_date:
+            return target
+    return None
+
+
+def _next_lunar_monthly(base_date: date, day: int, is_leap: bool) -> Optional[date]:
+    """农历"每月重复"：从基准农历月起向后找第一个农历 day 日。"""
+    if not HAS_CHNCAL:
+        logger.debug(
+            f"农历每月：cnlunar 未安装，{base_date} 的纪念日无法计算"
+        )
+        return None
+    lunar = get_lunar_by_datetime(
+        (base_date.year, base_date.month, base_date.day)
+    )
+    if lunar is None:
+        logger.warning(
+            f"农历每月：基准日 {base_date} 无农历信息，无法推进"
+        )
+        return None
+    base_ly = lunar.lunarYear
+    base_lm = lunar.lunarMonth
+    for offset in range(_LUNAR_MONTH_LOOKAHEAD):
+        total = base_lm + offset - 1
+        ly = base_ly + total // 12
+        lm = total % 12 + 1
+        g = lunar_to_gregorian(ly, lm, day, is_leap)
+        if g is None:
+            continue
+        if g > base_date:
+            return g
+    logger.warning(
+        f"农历每月：从 {base_date} 起 {_LUNAR_MONTH_LOOKAHEAD} 个农历月内"
+        f"未找到农历{day} 日（isleap={is_leap}），返回 None"
+    )
+    return None
+
+
+def _next_lunar_yearly(base_date: date, month: int, day: int,
+                       is_leap: bool) -> Optional[date]:
+    """
+    【P0 修复】农历"每年重复"：固定农历月 month，从基准农历年起查找。
+
+    原实现误把"每月"逻辑复制到这里：只用 base_lm 起算、忽略 mem["month"]，
+    于是"农历五月初五 端午"被算成"下个初五"（可能只是下个月），
+    提醒日期完全错位。这里改为固定 month，仅推进农历年。
+    """
+    if not HAS_CHNCAL:
+        logger.debug(
+            f"农历每年：cnlunar 未安装，{base_date} 的纪念日无法计算"
+        )
+        return None
+    lunar = get_lunar_by_datetime(
+        (base_date.year, base_date.month, base_date.day)
+    )
+    if lunar is None:
+        logger.warning(
+            f"农历每年：基准日 {base_date} 无农历信息，无法推进"
+        )
+        return None
+    base_ly = lunar.lunarYear
+    for ly in range(base_ly, base_ly + _LUNAR_YEAR_LOOKAHEAD):
+        g = lunar_to_gregorian(ly, month, day, is_leap)
+        if g is None:
+            continue
+        if g > base_date:
+            return g
+    logger.warning(
+        f"农历每年：从 {base_date} 起 {_LUNAR_YEAR_LOOKAHEAD} 个农历年内"
+        f"未找到农历{month}月{day} 日（isleap={is_leap}），返回 None"
+    )
+    return None
 
 
 def get_next_memorial_date(mem: dict, base_date,
@@ -198,73 +305,26 @@ def get_next_memorial_date(mem: dict, base_date,
     # ===== 每月重复 =====
     if repeat_type == REPEAT_MONTH:
         if mem["type"] == "solar":
-            for offset in (0, 1):
-                total = base_date.month + offset - 1
-                y = base_date.year + total // 12
-                m = total % 12 + 1
-                _, last_day = calendar.monthrange(y, m)
-                target = date(y, m, min(day, last_day))
-                if target > base_date or (include_base and target == base_date):
-                    return target
-            return None
+            candidate = _next_solar_monthly(base_date, day)
         else:
-            # 农历每月窗口 6 个月，覆盖连续小月
-            if not HAS_CHNCAL:
-                logger.debug(
-                    f"农历每月：cnlunar 未安装，{base_date} 的纪念日无法计算"
-                )
-                return None
-            lunar = get_lunar_by_datetime(
-                (base_date.year, base_date.month, base_date.day)
+            candidate = _next_lunar_monthly(
+                base_date, day, mem["isleap"]
             )
-            if lunar is None:
-                logger.warning(
-                    f"农历每月：基准日 {base_date} 无农历信息，无法推进"
-                )
-                return None
-            base_ly = lunar.lunarYear
-            base_lm = lunar.lunarMonth
-            is_leap = mem["isleap"]
-            for offset in range(6):
-                total = base_lm + offset - 1
-                ly = base_ly + total // 12
-                lm = total % 12 + 1
-                g = lunar_to_gregorian(ly, lm, day, is_leap)
-                if g is None:
-                    continue
-                if g > base_date or (include_base and g == base_date):
-                    return g
-            logger.warning(
-                f"农历每月：从 {base_date} 起 6 个农历月内未找到 "
-                f"农历{day} 日（isleap={is_leap}），返回 None"
-            )
+        if candidate is None:
             return None
+        if include_base and candidate == base_date:
+            return candidate
+        return candidate if candidate > base_date else None
 
     # ===== 每年重复 =====
     if mem["type"] == "solar":
-        for y in (base_date.year, base_date.year + 1):
-            _, last_day = calendar.monthrange(y, mem["month"])
-            target = date(y, mem["month"], min(day, last_day))
-            if target > base_date or (include_base and target == base_date):
-                return target
-        return None
+        candidate = _next_solar_yearly(base_date, mem["month"], day)
     else:
-        if not HAS_CHNCAL:
-            logger.debug(
-                f"农历每年：cnlunar 未安装，{base_date} 的纪念日无法计算"
-            )
-            return None
-        is_leap = mem["isleap"]
-        month = mem["month"]
-        for y in (base_date.year - 1, base_date.year, base_date.year + 1):
-            g = lunar_to_gregorian(y, month, day, is_leap)
-            if g is None:
-                continue
-            if g > base_date or (include_base and g == base_date):
-                return g
-        logger.warning(
-            f"农历每年：从 {base_date} 起在 "
-            f"{base_date.year - 1}~{base_date.year + 1} 三年内未找到 "
-            f"农历{month}月{day}日（isleap={is_leap}），返回 None"
+        candidate = _next_lunar_yearly(
+            base_date, mem["month"], day, mem["isleap"]
         )
+    if candidate is None:
         return None
+    if include_base and candidate == base_date:
+        return candidate
+    return candidate if candidate > base_date else None

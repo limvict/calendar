@@ -3,7 +3,8 @@
 import copy
 import json
 import os
-from config import get_resource_path
+from config import get_resource_path,get_logger
+logger = get_logger()
 
 # 你的默认主题常量
 DEFAULT_THEME = {
@@ -21,7 +22,7 @@ DEFAULT_THEME = {
     "shadow_size": 0,
     "shadow_color": "#00000040",
     "calendar_header_bg": "#A7B8A1",
-    "calendar_header_text": "#ffffff",
+    "calendar_header_text": "#000000",
     "weekend_header_red": "#C96068",
     "select_bg": "#B8AAA0",
     "select_text_color": "#ffffff",
@@ -60,44 +61,39 @@ def load_theme(theme_path: str = None) -> dict:
         try:
             theme_path = get_resource_path("theme.json")
         except Exception as e:
-            print(f"获取默认主题路径失败，使用默认主题：{e}")
+            logger.warning(f"获取默认主题路径失败，使用默认主题：{e}")
             return theme
-
     if not theme_path or not os.path.exists(theme_path):
-        print(f"主题文件 {theme_path!r} 不存在，使用默认主题")
+        logger.warning(f"主题文件 {theme_path!r} 不存在，使用默认主题")
         return theme
-
     try:
         with open(theme_path, "r", encoding="utf-8") as f:
             custom_theme = json.load(f)
     except (OSError, json.JSONDecodeError) as e:
-        print(f"主题文件读取或解析失败，使用默认主题：{e}")
+        logger.warning(f"主题文件读取或解析失败，使用默认主题：{e}")
         return theme
     except Exception as e:
-        print(f"加载主题文件时发生未知错误，使用默认主题：{e}")
+        logger.warning(f"加载主题文件时发生未知错误，使用默认主题：{e}")
         return theme
-
     if not isinstance(custom_theme, dict):
-        print(
+        logger.warning(
             f"主题文件内容不是 JSON 对象（实际为 {type(custom_theme).__name__}），"
             f"使用默认主题"
         )
         return theme
-
     unknown_keys = set(custom_theme) - set(DEFAULT_THEME)
     if unknown_keys:
-        print(f"主题文件中存在未知配置项，已忽略：{', '.join(sorted(unknown_keys))}")
-
+        logger.warning(
+            f"主题文件中存在未知配置项，已忽略：{', '.join(sorted(unknown_keys))}"
+        )
     for key, value in custom_theme.items():
         if key not in DEFAULT_THEME:
             continue
         if value is None:
-            print(f"主题配置项 {key!r} 为 None，已保留默认值")
+            logger.warning(f"主题配置项 {key!r} 为 None，已保留默认值")
             continue
         theme[key] = value
-
     return theme
-
 
 # 农历传统节日（月,日）-> 名称，只对这些文字标红
 LUNAR_FESTIVALS = {
