@@ -1,4 +1,4 @@
-# 运行依赖
+﻿# 运行依赖
 PyQt6>=6.6,<7
-cnlunar>=0.2
-chinesecalendar>=1.9
+cnlunar>=0.2,<1
+chinesecalendar>=1.9,<2

@@ -7,6 +7,10 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     name: Test on Python ${{ matrix.python-version }} / ${{ matrix.os }}
@@ -15,13 +19,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ windows-latest, ubuntu-latest ]
-        python-version: [ "3.9", "3.11", "3.12" ]
-        exclude:
-          # 若想减少 CI 时间，可只保留部分组合
+        include:
           - os: ubuntu-latest
+            python-version: "3.11"
+          - os: windows-latest
             python-version: "3.9"
-          - os: ubuntu-latest
+          - os: windows-latest
+            python-version: "3.11"
+          - os: windows-latest
             python-version: "3.12"
 
     steps:
@@ -34,11 +39,33 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
+      - name: Check file encodings are UTF-8
+        if: runner.os == 'Linux'
+        run: |
+          python - <<'PY'
+          import pathlib, sys
+          suffixes = {".py", ".ini", ".toml", ".cfg", ".json", ".yml", ".yaml"}
+          bad = []
+          for p in pathlib.Path(".").rglob("*"):
+              if p.is_file() and p.suffix in suffixes:
+                  try:
+                      p.read_bytes().decode("utf-8")
+                  except UnicodeDecodeError as e:
+                      bad.append(f"{p}: {e}")
+          if bad:
+              print("\n".join(bad))
+              sys.exit(1)
+          print("encoding check ok")
+          PY
+
       - name: Install system dependencies (Linux Qt libs)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libegl1 libgl1 libxkbcommon0 libxcb-cursor0
+          sudo apt-get install -y \
+            libegl1 libgl1 libxkbcommon0 libxkbcommon-x11-0 \
+            libdbus-1-3 libxcb-cursor0 libxcb-icccm4 \
+            libxcb-keysyms1 libxcb-shape0
 
       - name: Install dependencies
         run: |
@@ -46,7 +73,6 @@ jobs:
           pip install -r requirements-dev.txt
 
       - name: Run tests
-        run: pytest -v
+        run: pytest -v --durations=10
         env:
-          # Windows 与 Linux 无显示器环境下都走 offscreen
           QT_QPA_PLATFORM: offscreen
