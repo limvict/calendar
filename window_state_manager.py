@@ -1,9 +1,9 @@
 # coding: utf-8
+# ⚠️ 本文件有改动：P0-1 set_topmost 保留最小化状态
 from PyQt6.QtCore import Qt, QPoint, QEvent
 from PyQt6.QtGui import QCursor
 from PyQt6.QtWidgets import QWidget, QApplication
 from config import ConfigManager
-
 
 class WindowStateManager:
     """窗口状态管理：拖拽、置顶、透明度、位置记忆、边界限制"""
@@ -28,20 +28,31 @@ class WindowStateManager:
         value = max(0.0, min(1.0, float(value)))
         self.window.setWindowOpacity(value)
 
-
     def set_topmost(self, enable: bool):
+        """
+        切换置顶。
+
+        【P0-1】原实现无条件 show()，会把最小化状态恢复为正常显示，
+        用户从托盘勾选"置顶"时，隐藏（最小化）窗口会被拉出来。
+        这里记录 was_minimized，恢复时若原为最小化则走 showMinimized。
+        """
         was_visible = self.window.isVisible()
+        was_minimized = self.window.isMinimized()
         geo = self.window.saveGeometry() if was_visible else None
         self.window.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, enable)
         if was_visible:
-            self.window.show()
+            if was_minimized:
+                self.window.showMinimized()
+            else:
+                self.window.show()
             if geo is not None:
                 self.window.restoreGeometry(geo)
 
     def toggle_topmost(self):
         current = self.config.get("topmost", False)
         self.set_topmost(not current)
-        self.config.set("topmost", not current, save=False)
+        # 同上：显式动作 → 防抖落盘，不再等退出时 flush。
+        self.config.set("topmost", not current, save=True)
 
     def mouse_press_event(self, event):
         if event.button() == Qt.MouseButton.LeftButton:

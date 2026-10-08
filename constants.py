@@ -1,10 +1,20 @@
 # coding: utf-8
+# ⚠️ 本文件有改动：P2-2 删除死代码 SOLAR_TERMS / UPCOMING_REMIND_DAYS
 # 主题配置 - 莫兰迪柔和配色
 import copy
 import json
 import os
 from config import get_resource_path,get_logger
 logger = get_logger()
+
+# ===== 【FIX-6】月份天数校验基准年 =====
+# 必须是闰年，保证 2 月有 29 天。
+# 用途：
+#   * memorial.normalize_memorial —— 公历每年重复时按此年收敛日上限
+#   * dialogs.AddMemorialDialog._on_accept —— 公历日期合法性校验
+# 两处必须共用同一常量，否则会出现"UI 允许 2/29 但 normalize 收敛到 2/28"
+# 这类不一致。tests/test_constants.py 有 assert calendar.isleap() 保护。
+REFERENCE_LEAP_YEAR = 2024
 
 # 你的默认主题常量
 DEFAULT_THEME = {
@@ -47,7 +57,6 @@ DEFAULT_THEME = {
     "tag_bg": "#222222",
     "tag_text_color": "#FFFFFF",
 }
-
 
 def load_theme(theme_path: str = None) -> dict:
     """
@@ -123,13 +132,9 @@ FESTIVAL_NAME_MAP = {
     "国庆节": "国庆节",
 }
 
-# 二十四节气
-SOLAR_TERMS = [
-    "小寒", "大寒", "立春", "雨水", "惊蛰", "春分",
-    "清明", "谷雨", "立夏", "小满", "芒种", "夏至",
-    "小暑", "大暑", "立秋", "处暑", "白露", "秋分",
-    "寒露", "霜降", "立冬", "小雪", "大雪", "冬至",
-]
+# 【P2-2】删除以下死代码：
+#   SOLAR_TERMS = [...]           # 节气走 lunar.todaySolarTerms，本常量无引用
+#   UPCOMING_REMIND_DAYS = 7      # 无任何引用
 
 # ===== 【修复 2】法定节日里需要标红的名称 =====
 # 原实现 RED_TEXT_SET 只来自 LUNAR_FESTIVALS.values()，
@@ -156,6 +161,3 @@ NUM_CN_MAP = {
     "21": "廿一", "22": "廿二", "23": "廿三", "24": "廿四", "25": "廿五",
     "26": "廿六", "27": "廿七", "28": "廿八", "29": "廿九", "30": "三十",
 }
-
-# 预告提前天数
-UPCOMING_REMIND_DAYS = 7

@@ -1,4 +1,6 @@
 # coding: utf-8
+# ⚠️ 本文件有改动：P1-2 on_calendar_select_changed 预归一化；
+#                  P1-5 去掉 cal_title / info_label 硬编码样式
 import os
 import sys
 import ctypes  # 用于Windows DWM系统级修复
@@ -22,6 +24,7 @@ from config import config, get_resource_path, get_logger
 from utils import (
     HAS_CHNCAL, HAS_CHINESE_CAL, init_config_defaults, match_memorial_date,
     get_lunar_by_datetime,          # 【P1-3】新增
+    normalize_memorial,             # 【P1-2】新增：utils 已 re-export
 )
 from calendar_widget import ClickLabel, LunarCalendarWidget
 from dialogs import msg_warn, SettingDialog
@@ -127,10 +130,9 @@ class DragCalendarWidget(QWidget):
         self.btn_prev.setFixedWidth(36)
         self.btn_prev.clicked.connect(self.prev_month)
         self.cal_title = ClickLabel("")
+        self.cal_title.setObjectName("cal_title")
         self.cal_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.cal_title.setStyleSheet(
-            "font-size:15px;font-weight:500;cursor:pointer;background:transparent;color:#444;"
-        )
+        # 【P1-5】不再硬编码 setStyleSheet —— 交给 StyleManager 统一刷新
         self.btn_next = QPushButton(">")
         self.btn_next.setFixedWidth(36)
         self.btn_next.clicked.connect(self.next_month)
@@ -148,12 +150,11 @@ class DragCalendarWidget(QWidget):
         cal_vl.addWidget(self.cal)
 
         self.info_label = QLabel()
+        self.info_label.setObjectName("info_label")
         self.info_label.setFixedHeight(40)
         self.info_label.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter)
         self.info_label.setWordWrap(True)
-        self.info_label.setStyleSheet("""
-        QLabel{color:#444444;font-size:12px;padding:4px;}
-        """)
+        # 【P1-5】不再硬编码 setStyleSheet —— 交给 StyleManager 统一刷新
         cal_vl.addWidget(self.info_label)
 
         row2_layout = QHBoxLayout()
@@ -244,7 +245,7 @@ class DragCalendarWidget(QWidget):
             self.quit_app()
             event.accept()
             return
-        self.window_state.close_event(event) 
+        self.window_state.close_event(event)
 
     def contextMenuEvent(self, event):
         menu = QMenu()
@@ -318,7 +319,7 @@ class DragCalendarWidget(QWidget):
             self.window_state.set_opacity(orig_opacity)
             self.window_state.set_topmost(orig_topmost)
             self.tray_mgr.update_topmost_check(orig_topmost)
-                  
+
     def _apply_settings(self, dlg: SettingDialog):
         """
         应用设置变更。
@@ -373,14 +374,17 @@ class DragCalendarWidget(QWidget):
             return
         enable = bool(data["enable"])
         self.window_state.set_topmost(enable)
-        config.set("topmost", enable, save=False)
+        # 托盘切换是用户显式动作，走防抖落盘（500ms）。
+        # 原 save=False 只在 quit_app 的 flush() 才写盘，
+        # 进程被强杀 / 系统关机时该状态会丢。
+        config.set("topmost", enable, save=True)
         self.tray_mgr.update_topmost_check(enable)
 
     def show_normal(self):
         self.showNormal()
         self.raise_()
         self.activateWindow()
-        
+
     def _check_dependencies(self):
         warn_msgs = []
         if not HAS_CHNCAL:
@@ -456,12 +460,20 @@ class DragCalendarWidget(QWidget):
             return
 
         # 纪念日部分不依赖 lunar 对象，保持原样
+        # 【P1-2】全表先 normalize 一次，循环内传 normalized=True，
+        # 避免每条纪念日都重新走 normalize_memorial 的 copy + clamp。
         memorial_text = []
         for m in config.get("memorial_days", []):
-            if not m.get("enabled", True):
+            if not isinstance(m, dict):
                 continue
-            if match_memorial_date(m, sel_date):
-                name = m.get("name", "")
+            try:
+                n = normalize_memorial(m)
+            except Exception:
+                continue
+            if not n.get("enabled", True):
+                continue
+            if match_memorial_date(n, sel_date, normalized=True):
+                name = n.get("name", "")
                 if name:
                     memorial_text.append(name)
 
@@ -527,7 +539,6 @@ class DragCalendarWidget(QWidget):
         except Exception as e:
             logger.warning(f"刷写配置失败: {e}")
         QApplication.quit()
-
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

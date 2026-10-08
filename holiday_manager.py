@@ -31,6 +31,13 @@ class HolidayManager(QObject):
         self._net_worker.moveToThread(self._net_thread)
         self._net_worker.finished.connect(self._on_net_ready)
         self._net_worker.net_error.connect(self._on_net_error)
+        # 子线程亲和性 QObject 唯一可靠的清理路径：
+        # QThread::finished 发出后，Qt 保证延迟删除事件仍会被处理
+        # （见 Qt 文档 “No more events will be processed, except
+        # deferred deletion events.”）。
+        # shutdown() 里不再对 worker 调 deleteLater —— 那会把
+        # DeferredDelete 投到已停的事件循环，等于永不执行。
+        self._net_thread.finished.connect(self._net_worker.deleteLater)
         self._net_thread.start()
 
     def apply_cached(self) -> dict:
@@ -82,15 +89,30 @@ class HolidayManager(QObject):
     def shutdown(self):
         """安全关闭网络线程"""
         self._refresh_timer.stop()
-        if self._net_worker:
+
+        if self._net_worker is not None:
             self._net_worker.request_abort()
-        if self._net_thread:
+
+        if self._net_thread is not None:
             self._net_thread.quit()
-            if not self._net_thread.wait(3000):
+            clean_exit = self._net_thread.wait(3000)
+            if not clean_exit:
+                # terminate 路径下 Qt 不保证处理延迟删除事件，
+                # 这时 worker 的 C++ 对象可能残存；
+                # PyQt6 会在 Python 侧引用归零时由 GC 兜底销毁，
+                # 记一条 warning 方便排查。
+                logger.warning(
+                    "网络线程未在 3s 内退出，强制终止；"
+                    "worker 清理可能不完整"
+                )
                 self._net_thread.terminate()
                 self._net_thread.wait()
+            # _net_thread 的线程亲和性是主线程，deleteLater 由主线程
+            # 事件循环处理，有效。
             self._net_thread.deleteLater()
             self._net_thread = None
-        if self._net_worker:
-            self._net_worker.deleteLater()
-            self._net_worker = None
+
+        # worker 的 C++ 对象在正常退出路径下已由
+        # thread.finished → deleteLater 处理；这里只丢弃 Python 引用，
+        # 不重复调 deleteLater（子线程事件循环已停，会变死信）。
+        self._net_worker = None

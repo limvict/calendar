@@ -1,4 +1,5 @@
 # coding: utf-8
+# ⚠️ 本文件有改动：P2-1 _flush_save 精准清空 timer 引用
 import sys
 import os
 import json
@@ -24,7 +25,6 @@ APP_LOGGER_NAME = "MyCalendarApp"
 _logger: Optional[logging.Logger] = None
 _logger_lock = threading.Lock()
 
-
 # ===================== 路径辅助 =====================
 def _get_base_dir() -> str:
     """按平台返回标准数据目录（不含应用名）。"""
@@ -34,14 +34,12 @@ def _get_base_dir() -> str:
         return os.path.expanduser("~/Library/Application Support")
     return os.getenv("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
 
-
 def _get_log_dir() -> str:
     # 测试/自定义优先：允许用环境变量指定日志目录
     override = os.getenv("MYCALENDAR_LOG_DIR")
     if override:
         return override
     return os.path.join(_get_base_dir(), "MyCalendarApp")
-
 
 def get_resource_path(relative_path: str) -> str:
     """获取资源文件路径（兼容打包后环境）。"""
@@ -51,20 +49,16 @@ def get_resource_path(relative_path: str) -> str:
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
 
-
 def _get_app_data_dir() -> str:
     data_dir = os.path.join(_get_base_dir(), "MyCalendarApp")
     os.makedirs(data_dir, exist_ok=True)
     return data_dir
 
-
 def get_config_path() -> str:
     return os.path.join(_get_app_data_dir(), "config.json")
 
-
 def get_holiday_cache_path() -> str:
     return os.path.join(_get_app_data_dir(), "holiday_cache.json")
-
 
 # ===================== 日志 =====================
 def init_logger() -> logging.Logger:
@@ -97,7 +91,6 @@ def init_logger() -> logging.Logger:
     logger.addHandler(handler)
     return logger
 
-
 def get_logger() -> logging.Logger:
     """懒加载 logger，首次调用时才真正创建日志文件。线程安全。"""
     global _logger
@@ -106,7 +99,6 @@ def get_logger() -> logging.Logger:
             if _logger is None:
                 _logger = init_logger()
     return _logger
-
 
 def log_exception(msg: str):
     """
@@ -118,7 +110,6 @@ def log_exception(msg: str):
         logger.exception(msg)
     else:
         logger.error(msg)
-
 
 # ===================== 配置管理器 =====================
 class ConfigManager:
@@ -176,16 +167,19 @@ class ConfigManager:
         """补齐缺失字段（在锁内调用，或自行加锁）。"""
         with self._lock:
             cfg = self._cfg
-            if "memorial_days" not in cfg:
+            # 兼容“键存在但值类型错误”的脏数据（null / 字符串 / 数组等），
+            # 不再只看 key 是否存在——那样 cfg["memorial_cfg"] = None 会漏过。
+            if not isinstance(cfg.get("memorial_days"), list):
                 cfg["memorial_days"] = []
-            if "memorial_cfg" not in cfg:
-                cfg["memorial_cfg"] = {
-                    "enable_remind": True,
-                    "sound_enable": True,
-                    "last_remind_date": "",
-                    "remind_start_hour": 8,
-                    "remind_end_hour": 22,
-                }
+            mem_cfg = cfg.get("memorial_cfg")
+            if not isinstance(mem_cfg, dict):
+                mem_cfg = {}
+            mem_cfg.setdefault("enable_remind", True)
+            mem_cfg.setdefault("sound_enable", True)
+            mem_cfg.setdefault("last_remind_date", "")
+            mem_cfg.setdefault("remind_start_hour", 8)
+            mem_cfg.setdefault("remind_end_hour", 22)
+            cfg["memorial_cfg"] = mem_cfg
             if "theme" not in cfg:
                 cfg["theme"] = None
             if "topmost" not in cfg:
@@ -318,11 +312,18 @@ class ConfigManager:
         """
         原子写：先写临时文件并 fsync，再 os.replace 覆盖目标。
         这样即使写入途中进程被杀 / 断电，原 config.json 也不会被截断。
+
+        【P2-1】若本次回调正是 self._save_timer 触发的（Timer 是 Thread
+        子类，current_thread() 会返回该实例），落盘完成后清空引用。
+        若期间 save_debounced 已起新 timer，则不动（避免误清新引用）。
         """
+        current_timer = threading.current_thread()
         cfg_path = get_config_path()
         tmp_path = None
         try:
             with self._lock:
+                if self._save_timer is current_timer:
+                    self._save_timer = None
                 data = copy.deepcopy(self._cfg)
 
             target_dir = os.path.dirname(cfg_path) or "."
@@ -406,16 +407,13 @@ class ConfigManager:
             get_logger().error(f"导入配置失败: {e}")
             return False
 
-
 # 全局单例
 config = ConfigManager()
-
 
 # ===================== 兼容旧 API =====================
 def load_config() -> Dict[str, Any]:
     """兼容旧 API：返回深拷贝而非内部引用。"""
     return config.snapshot()
-
 
 def save_config(cfg: dict):
     """兼容旧 API：整体替换配置（含迁移 + 立即落盘）。"""
@@ -424,7 +422,6 @@ def save_config(cfg: dict):
         return
     config.replace_all(cfg, save=False)
     config.flush()
-
 
 # ===================== 节假日缓存 =====================
 def load_holiday_cache() -> dict:
@@ -436,7 +433,6 @@ def load_holiday_cache() -> dict:
         except Exception as e:
             get_logger().warning(f"读取节假日缓存失败: {e}")
     return {}
-
 
 def save_holiday_cache(cache_data: dict):
     cache_path = get_holiday_cache_path()

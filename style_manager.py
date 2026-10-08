@@ -1,8 +1,8 @@
 # coding: utf-8
+# ⚠️ 本文件有改动：P1-5 补 cal_title / info_label 主题样式
 from PyQt6.QtGui import QFont
 from config import ConfigManager
 from constants import DEFAULT_THEME, load_theme
-
 
 class StyleManager:
     """UI样式统一管理：主题加载、全控件样式刷新"""
@@ -53,6 +53,17 @@ class StyleManager:
         window.btn_prev.setStyleSheet(btn_style)
         window.btn_next.setStyleSheet(btn_style)
         window.btn_today.setStyleSheet(btn_style)
+
+        # 【P1-5】cal_title / info_label 使用主题色，不再硬编码 #444
+        title_color = th.get("date_text_color", "#444444")
+        info_color = th.get("date_text_color", "#444444")
+        window.cal_title.setStyleSheet(
+            f"font-size:15px;font-weight:500;cursor:pointer;"
+            f"background:transparent;color:{title_color};"
+        )
+        window.info_label.setStyleSheet(
+            f"QLabel{{color:{info_color};font-size:12px;padding:4px;}}"
+        )
 
         # 更新日历控件主题
         window.cal.update_theme(th)

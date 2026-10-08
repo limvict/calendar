@@ -1,4 +1,5 @@
 # coding: utf-8
+# ⚠️ 本文件有改动：P1-4 导入配置阻断预览；P2-4 公历清 chk_leap
 import copy
 import json
 import calendar
@@ -13,6 +14,7 @@ from utils import (
     REPEAT_YEAR, REPEAT_MONTH, REPEAT_WEEK,
     normalize_memorial, get_next_memorial_date,
 )
+from constants import REFERENCE_LEAP_YEAR   # [FIX-6]
 
 # ===================== 纪念日列表排序常量 =====================
 # 无法计算下次发生日期的纪念日排到最后。
@@ -182,8 +184,11 @@ class AddMemorialDialog(QDialog):
             month = self.spin_month.value()
             day = self.spin_day.value()
             if is_solar:
-                if not QDate.isValid(2024, month, day):
-                    _, last_day = calendar.monthrange(2024, month)
+                # [FIX-6] 用共享的闰年基准，与 memorial.normalize_memorial
+                # 保持一致；两处都引用 constants.REFERENCE_LEAP_YEAR。
+                if not QDate.isValid(REFERENCE_LEAP_YEAR, month, day):
+                    _, last_day = calendar.monthrange(
+                        REFERENCE_LEAP_YEAR, month)
                     msg_warn(
                         self, "提示",
                         f"{month}月没有{day}日，请输入 1~{last_day} 之间的日期"
@@ -232,7 +237,12 @@ class AddMemorialDialog(QDialog):
             self.radio_solar.setChecked(True)
         else:
             self.radio_lunar.setChecked(True)
-        self.chk_leap.setChecked(data.get("isleap", False))
+        # 【P2-4】公历强制清闰月勾选，避免非法残留数据显示为已勾选
+        # （_update_day_range 只禁用了控件，不会自动取消勾选）
+        if typ == "solar":
+            self.chk_leap.setChecked(False)
+        else:
+            self.chk_leap.setChecked(data.get("isleap", False))
         repeat = data.get("repeat_type", REPEAT_YEAR)
         idx = self.combo_repeat.findData(repeat)
         if idx >= 0:
@@ -329,7 +339,8 @@ class MemorialDialog(QDialog):
             disabled_rank = 0 if item.get("enabled", True) else 1
 
             try:
-                target = get_next_memorial_date(item, today, include_base=True)
+                target = get_next_memorial_date(
+                    item, today, include_base=True, normalized=True)
             except Exception:
                 target = None
 
@@ -342,8 +353,15 @@ class MemorialDialog(QDialog):
 
     def refresh_list(self):
         self.list_widget.clear()
-        self.memorial_list = [
-            normalize_memorial(m) for m in self.memorial_list]
+        normalized = []
+        for m in self.memorial_list:
+            if not isinstance(m, dict):
+                continue
+            try:
+                normalized.append(normalize_memorial(m))
+            except Exception:
+                continue
+        self.memorial_list = normalized
         self._sort_by_date()
 
         repeat_name_map = {
@@ -601,25 +619,45 @@ class SettingDialog(QDialog):
 
     def _reload_from_cfg(self):
         """
-        导入配置后刷新各控件显示。
-        注意：setChecked / setValue 会触发 toggled / valueChanged，
-        进而 emit 预览信号——这是预期行为（让用户先看到效果）。
+        导入配置后刷新控件显示。
+
+        【P1-4】期间 blockSignals，避免 setChecked/setValue 触发
+        preview_topmost_changed / preview_opacity_changed 让主窗口
+        在"用户点导入但随后取消"的流程里闪一下。
+        全部设置完成后，再手动同步 _opacity_val / 标签文本。
         """
-        self.chk_topmost.setChecked(bool(self.cfg.get("topmost", False)))
-
-        mem_cfg = self.cfg.get("memorial_cfg") or {}
-        self.chk_mem_remind.setChecked(bool(mem_cfg.get("enable_remind", True)))
-        self.chk_mem_sound.setChecked(bool(mem_cfg.get("sound_enable", True)))
-
-        # 自启状态来自注册表，不跟随导入文件
-        self.chk_autostart.setChecked(self._auto_start_state)
-
+        widgets = (
+            self.chk_topmost, self.chk_mem_remind,
+            self.chk_mem_sound, self.slider_op,
+        )
+        for w in widgets:
+            w.blockSignals(True)
         try:
-            op = float(self.cfg.get("opacity", 0.92))
-        except (TypeError, ValueError):
-            op = 0.92
-        op = max(0.6, min(1.0, op))
-        self.slider_op.setValue(int(op * 100))
+            self.chk_topmost.setChecked(bool(self.cfg.get("topmost", False)))
+
+            mem_cfg = self.cfg.get("memorial_cfg") or {}
+            self.chk_mem_remind.setChecked(
+                bool(mem_cfg.get("enable_remind", True)))
+            self.chk_mem_sound.setChecked(
+                bool(mem_cfg.get("sound_enable", True)))
+
+            # 自启状态来自注册表，不跟随导入文件
+            self.chk_autostart.setChecked(self._auto_start_state)
+
+            try:
+                op = float(self.cfg.get("opacity", 0.92))
+            except (TypeError, ValueError):
+                op = 0.92
+            op = max(0.6, min(1.0, op))
+            self.slider_op.setValue(int(op * 100))
+
+            # slider 被 block 后 _on_slider_change 未触发，
+            # 这里手动同步派生状态。
+            self._opacity_val = op
+            self.lbl_op_val.setText(f"{int(op * 100)}%")
+        finally:
+            for w in widgets:
+                w.blockSignals(False)
 
     # ---------- 纪念日管理：直接读写 self.cfg ----------
     def open_mem_dialog(self):
@@ -645,7 +683,7 @@ class SettingDialog(QDialog):
 
     def get_mem_sound(self) -> bool:
         return self.chk_mem_sound.isChecked()
-    
+
 # ===================== 纪念日提醒弹窗 =====================
 class MemorialRemindDialog(QDialog):
     def __init__(self, memorial_list, theme, parent=None):

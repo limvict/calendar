@@ -1,104 +1,47 @@
-# tests/conftest.py
 # coding: utf-8
-"""
-pytest 共享 fixture。
+import os
+import tempfile
 
-提供：
-  * qapp              —— PyQt6 QApplication 单例（session 级）
-  * fake_lunar_env    —— 宽松农历替身，未注册日期返回 None
-  * strict_lunar_env  —— 严格农历替身，语义同 fake，由测试自身保证合法性
-"""
-import sys
-from pathlib import Path
+# Qt 离屏模式，必须在导入 PyQt6 前设置
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+# 隔离配置/日志目录，避免测试污染真实用户目录
+_TMP_HOME = tempfile.mkdtemp(prefix="calendar_tests_")
+os.environ["APPDATA"] = _TMP_HOME
+os.environ["XDG_DATA_HOME"] = _TMP_HOME
+os.environ["HOME"] = _TMP_HOME
+os.environ["MYCALENDAR_LOG_DIR"] = os.path.join(_TMP_HOME, "logs")
 
 import pytest
 
-# 项目根目录加入 sys.path，保证能 import config / memorial / lunar 等
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from _helpers import FakeLunarEnv  # noqa: E402
-
-
-# ---------------------------------------------------------------- qapp
 @pytest.fixture(scope="session")
 def qapp():
-    """PyQt6 QApplication 单例（session 级，避免重复创建崩溃）。"""
     from PyQt6.QtWidgets import QApplication
-    app = QApplication.instance() or QApplication([])
+
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication([])
     yield app
 
 
-# ---------------------------------------------------------------- lunar 替身
-def _install_fake_lunar(monkeypatch, env: FakeLunarEnv):
-    """
-    把 fake 农历查询注入到 memorial / lunar 模块。
-    按 memorial.py 实际 import 方式替换：
-      * get_lunar_by_datetime
-      * lunar_to_gregorian
-    """
-    import memorial
-    import lunar as lunar_mod
-
-    for mod in (memorial, lunar_mod):
-        if hasattr(mod, "get_lunar_by_datetime"):
-            def _get_lunar(dt, _env=env):
-                key = (dt.year, dt.month, dt.day) if hasattr(dt, "year") else dt
-                return _env.get(key)
-            monkeypatch.setattr(mod, "get_lunar_by_datetime", _get_lunar,
-                                raising=False)
-
-        if hasattr(mod, "lunar_to_gregorian"):
-            def _to_greg(ly, lm, ld, is_leap=False, _env=env):
-                return _env.get_gregorian(ly, lm, ld, is_leap)
-            monkeypatch.setattr(mod, "lunar_to_gregorian", _to_greg,
-                                raising=False)
-
-    # 让 memorial 认为 cnlunar 已装
-    monkeypatch.setattr(memorial, "HAS_CHNCAL", True, raising=False)
-
-
 @pytest.fixture
-def fake_lunar_env(monkeypatch):
-    """宽松农历替身。测试里 env.add(公历, FakeLunar(...)) 注册映射。"""
-    env = FakeLunarEnv()
-    _install_fake_lunar(monkeypatch, env)
-    return env
-
-
-@pytest.fixture
-def strict_lunar_env(monkeypatch):
-    """严格农历替身。与 fake 共用机制，合法性由测试决定。"""
-    env = FakeLunarEnv()
-    _install_fake_lunar(monkeypatch, env)
-    return env
-
-# ---------------------------------------------------------------- 日志传播
-# ---------------------------------------------------------------- 日志传播
-@pytest.fixture(autouse=True)
-def _enable_log_capture():
+def isolated_config(tmp_path, monkeypatch):
     """
-    让 config.get_logger() 返回的 logger 能被 pytest caplog 捕获。
-
-    背景：config 里 logger.propagate = False 且 level = WARNING，
-    日志只写文件、不进 root logger，caplog 一条都收不到。
-    测试期间临时打开传播并降到 DEBUG，用完还原，不影响生产行为。
+    每个测试使用独立临时配置目录，并重置 ConfigManager 单例。
     """
-    import logging
+    import config as config_mod
+
+    monkeypatch.setattr(config_mod, "_get_base_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(config_mod, "CONFIG_SAVE_DEBOUNCE_MS", 10)
+
+    config_mod.ConfigManager._instance = None
+    cm = config_mod.ConfigManager()
+
+    yield config_mod, cm
 
     try:
-        from config import get_logger
-        logger = get_logger()
-    except ImportError:
-        yield
-        return
-
-    old_propagate = logger.propagate
-    old_level = logger.level
-
-    logger.propagate = True
-    logger.setLevel(logging.DEBUG)
-
-    yield
-
-    logger.propagate = old_propagate
-    logger.setLevel(old_level)
+        cm.flush()
+    except Exception:
+        pass
+    config_mod.ConfigManager._instance = None

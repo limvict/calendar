@@ -1,8 +1,12 @@
 # coding: utf-8
+# ⚠️ 本文件有改动：P2-2 删除死事件 THEME_CHANGED / REMIND_TRIGGERED
 import threading
 from typing import Callable, Any, Dict, List, Tuple
 from PyQt6.QtCore import QObject, pyqtSignal
 
+from config import get_logger   # [FIX-3]
+
+logger = get_logger()   # [FIX-3]
 
 def _same_callable(a, b) -> bool:
     """
@@ -20,7 +24,6 @@ def _same_callable(a, b) -> bool:
     if sa is None or sb is None or fa is None or fb is None:
         return False
     return sa is sb and fa is fb
-
 
 class EventBus(QObject):
     """
@@ -50,8 +53,17 @@ class EventBus(QObject):
         :param slot: 回调槽函数，接收一个 dict 参数
         """
         def _wrapper(etype: str, data: dict):
-            if etype == event_type:
+            if etype != event_type:
+                return
+            # [FIX-3] 单个订阅者抛异常不应吃掉后续订阅者。
+            # Qt 的 DirectConnection 里 Python 异常会向上冒泡到 emit 调用者，
+            # 排在其后的 wrapper 会收不到本次事件。
+            try:
                 slot(data)
+            except Exception:
+                logger.exception(
+                    f"事件 {event_type} 的订阅者 {slot} 抛异常，已隔离"
+                )
 
         with self._lock:
             self._subscriber_map.setdefault(event_type, []).append((slot, _wrapper))
@@ -87,7 +99,6 @@ class EventBus(QObject):
         """
         self._global_signal.emit(event_type, kwargs)
 
-
 class _EventBusProxy:
     """
     模块级事件总线代理：懒创建 + 线程安全 + 与原 API 完全兼容。
@@ -120,7 +131,6 @@ class _EventBusProxy:
     def publish(self, event_type: str, **kwargs) -> None:
         return self._ensure().publish(event_type, **kwargs)
 
-
 # 全局事件类型常量定义
 class EventType:
     # 节假日相关
@@ -133,15 +143,15 @@ class EventType:
     WINDOW_TOGGLE_TOPMOST = "window_toggle_topmost"  # 切换置顶，参数：enable: bool
     # 设置相关
     OPEN_SETTINGS = "open_settings"              # 打开设置对话框
+    # SETTINGS_CHANGED 目前仅 main._apply_settings 单向广播，
+    # 尚无订阅方；保留事件名以便后续主题 / 字体等热更新订阅。
     SETTINGS_CHANGED = "settings_changed"        # 设置已变更
     # 数据管理相关
     BACKUP_MEMORIAL = "backup_memorial"          # 备份纪念日数据
     RESTORE_MEMORIAL = "restore_memorial"        # 恢复纪念日数据
-    # 提醒相关
-    REMIND_TRIGGERED = "remind_triggered"        # 提醒触发
-    # 主题相关
-    THEME_CHANGED = "theme_changed"              # 主题变更
-
+    # 【P2-2】删除以下死事件（无发布方 / 无订阅方）：
+    #   THEME_CHANGED = "theme_changed"
+    #   REMIND_TRIGGERED = "remind_triggered"
 
 # 全局单例代理
 event_bus = _EventBusProxy()

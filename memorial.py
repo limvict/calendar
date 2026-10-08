@@ -1,4 +1,6 @@
 # coding: utf-8
+# ⚠️ 本文件有改动：P1-2 match/get_next 加 normalized 参数；
+#                  P2-3 _LUNAR_YEAR_LOOKAHEAD 3→5
 """
 纪念日归一化、日期匹配、下次发生日期计算。
 """
@@ -7,6 +9,7 @@ from datetime import date, datetime, timedelta
 from typing import Optional
 
 from config import get_logger
+from constants import REFERENCE_LEAP_YEAR   # [FIX-6]
 from lunar import get_lunar_by_datetime, lunar_to_gregorian, HAS_CHNCAL
 
 logger = get_logger()
@@ -28,13 +31,25 @@ _VALID_TYPES = ("solar", "lunar")
 # 【P0 修复】农历"每年重复"向后搜索的年份窗口。
 # 农历新年最晚可到公历 2 月下旬，因此用「基准日的农历年」及「农历年+1」
 # 两个窗口即可覆盖任何一次"下一次的该农历月日"。
-_LUNAR_YEAR_LOOKAHEAD = 3
+#
+# 【P2-3】3 → 5：农历闰月间隔可达 19 年（闰月周期近似 19 年 7 闰，
+# 但"特定月的闰月"最长间隔可达 30+ 年）。3 年窗口会让
+# "农历闰四月十五"这类配置在无闰月年份里连续多次返回 None。
+# 5 年是覆盖常见闰月密集期的折中：命中率显著上升，
+# 单次搜索开销（~5×365 天）由 _build_lunar_index 的 lru_cache 吸收。
+#
+# 【FIX-5 与 reminder_manager.MAX_RETRY_PER_MEMORIAL 的关系】语义正交：
+#   * 本窗口是"单次搜索的深度边界"，窗口内找不到目标日即返回 None
+#   * MAX_RETRY_PER_MEMORIAL 是"候选日期已过后的推进次数"，不能
+#     扩展本窗口的搜索深度
+_LUNAR_YEAR_LOOKAHEAD = 5
 
 # 【P1 修复】农历"每月重复"向后搜索的农历月窗口。
 # 原 6 个月在极端情况（连续若干小月 + 目标日为月尾 30）下可能取不到，
 # 直接返回 None 导致整月不提醒。13 个月足以跨过任何一年农历循环。
+#
+# 【FIX-5】同上：本窗口是单次搜索深度边界，外层重试不能扩展它。
 _LUNAR_MONTH_LOOKAHEAD = 13
-
 
 def _to_pydate(qdate) -> date:
     """
@@ -48,7 +63,6 @@ def _to_pydate(qdate) -> date:
         return qdate.toPyDate()
     # 兜底：鸭子类型
     return date(qdate.year(), qdate.month(), qdate.day())
-
 
 def normalize_memorial(mem: dict) -> dict:
     mem = mem.copy()
@@ -112,7 +126,9 @@ def normalize_memorial(mem: dict) -> dict:
         # 仅「公历 + 每年重复」时按实际月份天数收敛
         if mem["type"] == "solar" and mem["repeat_type"] == REPEAT_YEAR:
             try:
-                _, last_day = calendar.monthrange(2024, mem["month"])
+                # [FIX-6] 用共享常量，避免与 dialogs.py 校验基准漂移
+                _, last_day = calendar.monthrange(
+                    REFERENCE_LEAP_YEAR, mem["month"])
                 day = min(day, last_day)
             except Exception:
                 day = min(day, 28)
@@ -132,15 +148,17 @@ def normalize_memorial(mem: dict) -> dict:
     mem["isleap"] = bool(mem.get("isleap", False))
     return mem
 
-
-def match_memorial_date(mem: dict, qdate) -> bool:
+def match_memorial_date(mem: dict, qdate, normalized: bool = False) -> bool:
     """
     判断纪念日是否命中指定日期（支持年/月/周，公历/农历）。
 
-    :param mem:   纪念日配置（内部会 normalize）
+    :param mem:   纪念日配置
     :param qdate: PyQt6.QtCore.QDate / datetime.date / datetime.datetime
+    :param normalized: 【P1-2】若调用方已 normalize 过（同一次调度循环
+        内），传 True 跳过重复 normalize（省去 copy + clamp 开销）。
     """
-    mem = normalize_memorial(mem)
+    if not normalized:
+        mem = normalize_memorial(mem)
     repeat_type = mem["repeat_type"]
     day = mem["day"]
 
@@ -171,7 +189,6 @@ def match_memorial_date(mem: dict, qdate) -> bool:
             and lunar.lunarDay == day
             and lunar.isLunarLeapMonth == mem.get("isleap", False))
 
-
 def _next_week_date(base_date: date, target_weekday: int) -> date:
     """
     【修复】返回严格大于 base_date 的下一个目标星期。
@@ -186,7 +203,6 @@ def _next_week_date(base_date: date, target_weekday: int) -> date:
         diff = 7
     return base_date + timedelta(days=diff)
 
-
 def _next_solar_monthly(base_date: date, day: int) -> Optional[date]:
     """公历"每月重复"：返回 >= base_date（或 > base_date）的下一次。"""
     for offset in (0, 1):
@@ -199,7 +215,6 @@ def _next_solar_monthly(base_date: date, day: int) -> Optional[date]:
             return target
     return None
 
-
 def _next_solar_yearly(base_date: date, month: int, day: int) -> Optional[date]:
     """公历"每年重复"：返回 >= base_date（或 > base_date）的下一次。"""
     for y in (base_date.year, base_date.year + 1):
@@ -208,7 +223,6 @@ def _next_solar_yearly(base_date: date, month: int, day: int) -> Optional[date]:
         if target > base_date:
             return target
     return None
-
 
 def _next_lunar_monthly(base_date: date, day: int, is_leap: bool) -> Optional[date]:
     """农历"每月重复"：从基准农历月起向后找第一个农历 day 日。"""
@@ -242,7 +256,6 @@ def _next_lunar_monthly(base_date: date, day: int, is_leap: bool) -> Optional[da
     )
     return None
 
-
 def _next_lunar_yearly(base_date, month, day, is_leap):
     if not HAS_CHNCAL:
         logger.debug(
@@ -263,13 +276,20 @@ def _next_lunar_yearly(base_date, month, day, is_leap):
         f"未找到农历{month}月{day} 日（isleap={is_leap}），返回 None")
     return None
 
+def get_next_memorial_date(mem, base_date, include_base=False,
+                           normalized=False):
+    """
+    计算下一个发生日期。
 
-def get_next_memorial_date(mem, base_date, include_base=False):
+    :param normalized: 【P1-2】若调用方已 normalize 过，传 True 跳过
+        重复 normalize；默认 False 兼容旧调用点。
+    """
     if base_date is None:
         return None
     base_date = _to_pydate(base_date)
 
-    mem = normalize_memorial(mem)
+    if not normalized:
+        mem = normalize_memorial(mem)
     repeat_type = mem["repeat_type"]
     day = mem["day"]
 
@@ -304,22 +324,18 @@ def get_next_memorial_date(mem, base_date, include_base=False):
             base_date, mem["month"], day, mem["isleap"])
     return candidate
 
-
 def _matches_lunar_monthly(base_date, day, is_leap):
-    """base_date 的农历日是否正好等于 day（匹配 isleap 要求）。"""
     lunar = get_lunar_by_datetime(
         (base_date.year, base_date.month, base_date.day))
     if lunar is None:
         return False
     if getattr(lunar, "lunarDay", None) != day:
         return False
-    if is_leap and not getattr(lunar, "isLunarLeapMonth", False):
+    if bool(getattr(lunar, "isLunarLeapMonth", False)) != bool(is_leap):
         return False
     return True
 
-
 def _matches_lunar_yearly(base_date, month, day, is_leap):
-    """base_date 的农历月日是否正好等于 month/day（匹配 isleap 要求）。"""
     lunar = get_lunar_by_datetime(
         (base_date.year, base_date.month, base_date.day))
     if lunar is None:
@@ -327,6 +343,6 @@ def _matches_lunar_yearly(base_date, month, day, is_leap):
     if (getattr(lunar, "lunarMonth", None) != month
             or getattr(lunar, "lunarDay", None) != day):
         return False
-    if is_leap and not getattr(lunar, "isLunarLeapMonth", False):
+    if bool(getattr(lunar, "isLunarLeapMonth", False)) != bool(is_leap):
         return False
     return True
