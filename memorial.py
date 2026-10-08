@@ -28,7 +28,7 @@ _VALID_TYPES = ("solar", "lunar")
 # 【P0 修复】农历"每年重复"向后搜索的年份窗口。
 # 农历新年最晚可到公历 2 月下旬，因此用「基准日的农历年」及「农历年+1」
 # 两个窗口即可覆盖任何一次"下一次的该农历月日"。
-_LUNAR_YEAR_LOOKAHEAD = 2
+_LUNAR_YEAR_LOOKAHEAD = 3
 
 # 【P1 修复】农历"每月重复"向后搜索的农历月窗口。
 # 原 6 个月在极端情况（连续若干小月 + 目标日为月尾 30）下可能取不到，
@@ -243,51 +243,28 @@ def _next_lunar_monthly(base_date: date, day: int, is_leap: bool) -> Optional[da
     return None
 
 
-def _next_lunar_yearly(base_date: date, month: int, day: int,
-                       is_leap: bool) -> Optional[date]:
-    """
-    【P0 修复】农历"每年重复"：固定农历月 month，从基准农历年起查找。
-
-    原实现误把"每月"逻辑复制到这里：只用 base_lm 起算、忽略 mem["month"]，
-    于是"农历五月初五 端午"被算成"下个初五"（可能只是下个月），
-    提醒日期完全错位。这里改为固定 month，仅推进农历年。
-    """
+def _next_lunar_yearly(base_date, month, day, is_leap):
     if not HAS_CHNCAL:
         logger.debug(
-            f"农历每年：cnlunar 未安装，{base_date} 的纪念日无法计算"
-        )
+            f"农历每年：cnlunar 未安装，{base_date} 的纪念日无法计算")
         return None
-    lunar = get_lunar_by_datetime(
-        (base_date.year, base_date.month, base_date.day)
-    )
-    if lunar is None:
-        logger.warning(
-            f"农历每年：基准日 {base_date} 无农历信息，无法推进"
-        )
-        return None
-    base_ly = lunar.lunarYear
-    for ly in range(base_ly, base_ly + _LUNAR_YEAR_LOOKAHEAD):
-        g = lunar_to_gregorian(ly, month, day, is_leap)
+
+    # 不依赖基准日的农历年，从公历年 -1 开始试，覆盖跨农历年
+    start_year = base_date.year - 1
+    for gy in range(start_year, start_year + _LUNAR_YEAR_LOOKAHEAD):
+        g = lunar_to_gregorian(gy, month, day, is_leap)
         if g is None:
             continue
         if g > base_date:
             return g
+
     logger.warning(
         f"农历每年：从 {base_date} 起 {_LUNAR_YEAR_LOOKAHEAD} 个农历年内"
-        f"未找到农历{month}月{day} 日（isleap={is_leap}），返回 None"
-    )
+        f"未找到农历{month}月{day} 日（isleap={is_leap}），返回 None")
     return None
 
 
-def get_next_memorial_date(mem: dict, base_date,
-                           include_base: bool = False) -> Optional[date]:
-    """
-    计算纪念日的下一个发生日期。
-
-    :param base_date:    基准日期
-    :param include_base: True 时允许返回 base_date 本身（命中当日）；
-                         False（默认）时严格返回 > base_date 的日期。
-    """
+def get_next_memorial_date(mem, base_date, include_base=False):
     if base_date is None:
         return None
     base_date = _to_pydate(base_date)
@@ -305,26 +282,51 @@ def get_next_memorial_date(mem: dict, base_date,
     # ===== 每月重复 =====
     if repeat_type == REPEAT_MONTH:
         if mem["type"] == "solar":
+            if include_base and base_date.day == day:
+                return base_date
             candidate = _next_solar_monthly(base_date, day)
         else:
-            candidate = _next_lunar_monthly(
-                base_date, day, mem["isleap"]
-            )
-        if candidate is None:
-            return None
-        if include_base and candidate == base_date:
-            return candidate
-        return candidate if candidate > base_date else None
+            if include_base and _matches_lunar_monthly(base_date, day, mem["isleap"]):
+                return base_date
+            candidate = _next_lunar_monthly(base_date, day, mem["isleap"])
+        return candidate
 
     # ===== 每年重复 =====
     if mem["type"] == "solar":
+        if include_base and base_date.month == mem["month"] and base_date.day == day:
+            return base_date
         candidate = _next_solar_yearly(base_date, mem["month"], day)
     else:
+        if include_base and _matches_lunar_yearly(
+                base_date, mem["month"], day, mem["isleap"]):
+            return base_date
         candidate = _next_lunar_yearly(
-            base_date, mem["month"], day, mem["isleap"]
-        )
-    if candidate is None:
-        return None
-    if include_base and candidate == base_date:
-        return candidate
-    return candidate if candidate > base_date else None
+            base_date, mem["month"], day, mem["isleap"])
+    return candidate
+
+
+def _matches_lunar_monthly(base_date, day, is_leap):
+    """base_date 的农历日是否正好等于 day（匹配 isleap 要求）。"""
+    lunar = get_lunar_by_datetime(
+        (base_date.year, base_date.month, base_date.day))
+    if lunar is None:
+        return False
+    if getattr(lunar, "lunarDay", None) != day:
+        return False
+    if is_leap and not getattr(lunar, "isLunarLeapMonth", False):
+        return False
+    return True
+
+
+def _matches_lunar_yearly(base_date, month, day, is_leap):
+    """base_date 的农历月日是否正好等于 month/day（匹配 isleap 要求）。"""
+    lunar = get_lunar_by_datetime(
+        (base_date.year, base_date.month, base_date.day))
+    if lunar is None:
+        return False
+    if (getattr(lunar, "lunarMonth", None) != month
+            or getattr(lunar, "lunarDay", None) != day):
+        return False
+    if is_leap and not getattr(lunar, "isLunarLeapMonth", False):
+        return False
+    return True

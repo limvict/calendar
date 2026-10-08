@@ -71,3 +71,34 @@ def strict_lunar_env(monkeypatch):
     env = FakeLunarEnv()
     _install_fake_lunar(monkeypatch, env)
     return env
+
+# ---------------------------------------------------------------- 日志传播
+# ---------------------------------------------------------------- 日志传播
+@pytest.fixture(autouse=True)
+def _enable_log_capture():
+    """
+    让 config.get_logger() 返回的 logger 能被 pytest caplog 捕获。
+
+    背景：config 里 logger.propagate = False 且 level = WARNING，
+    日志只写文件、不进 root logger，caplog 一条都收不到。
+    测试期间临时打开传播并降到 DEBUG，用完还原，不影响生产行为。
+    """
+    import logging
+
+    try:
+        from config import get_logger
+        logger = get_logger()
+    except ImportError:
+        yield
+        return
+
+    old_propagate = logger.propagate
+    old_level = logger.level
+
+    logger.propagate = True
+    logger.setLevel(logging.DEBUG)
+
+    yield
+
+    logger.propagate = old_propagate
+    logger.setLevel(old_level)
