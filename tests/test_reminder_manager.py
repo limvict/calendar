@@ -1,5 +1,5 @@
 # coding: utf-8
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from PyQt6.QtCore import QDate
 
@@ -70,8 +70,10 @@ def test_get_bool_cfg_variants():
     )
 
 
+from datetime import datetime, timedelta
+
 def test_first_future_remind_ts(qapp):
-    now_ms = int(datetime.now().timestamp() * 1000)
+    now_dt = datetime.now()
     today = QDate.currentDate()
     tomorrow = today.addDays(1)
 
@@ -79,8 +81,10 @@ def test_first_future_remind_ts(qapp):
         today,
         tomorrow,
         remind_h=23,
-        now_ms=now_ms,
+        now_dt=now_dt,
     )
 
     assert ts is not None
+
+    now_ms = int(now_dt.timestamp() * 1000)
     assert ts > now_ms

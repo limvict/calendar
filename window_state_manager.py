@@ -1,12 +1,13 @@
 # coding: utf-8
-# ⚠️ 本文件有改动：P0-1 set_topmost 保留最小化状态
-from PyQt6.QtCore import Qt, QPoint, QEvent
+from PyQt6.QtCore import Qt, QPoint
 from PyQt6.QtGui import QCursor
 from PyQt6.QtWidgets import QWidget, QApplication
 from config import ConfigManager
 
+
 class WindowStateManager:
-    """窗口状态管理：拖拽、置顶、透明度、位置记忆、边界限制"""
+    """窗口状态管理：拖拽、置顶、透明度、位置记忆、边界限制。"""
+
     def __init__(self, window: QWidget, config: ConfigManager):
         self.window = window
         self.config = config
@@ -32,9 +33,8 @@ class WindowStateManager:
         """
         切换置顶。
 
-        【P0-1】原实现无条件 show()，会把最小化状态恢复为正常显示，
-        用户从托盘勾选"置顶"时，隐藏（最小化）窗口会被拉出来。
-        这里记录 was_minimized，恢复时若原为最小化则走 showMinimized。
+        必须记录 was_minimized：无条件 show() 会把最小化状态恢复为正常
+        显示，用户从托盘勾选"置顶"时隐藏（最小化）窗口会被拉出来。
         """
         was_visible = self.window.isVisible()
         was_minimized = self.window.isMinimized()
@@ -51,25 +51,34 @@ class WindowStateManager:
     def toggle_topmost(self):
         current = self.config.get("topmost", False)
         self.set_topmost(not current)
-        # 同上：显式动作 → 防抖落盘，不再等退出时 flush。
         self.config.set("topmost", not current, save=True)
 
     def mouse_press_event(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            self._drag_pos = event.globalPosition().toPoint() - self.window.frameGeometry().topLeft()
+            self._drag_pos = (event.globalPosition().toPoint()
+                              - self.window.frameGeometry().topLeft())
             self._is_dragging = True
             event.accept()
 
     def mouse_move_event(self, event):
         if event.buttons() & Qt.MouseButton.LeftButton and self._is_dragging:
             new_pos = event.globalPosition().toPoint() - self._drag_pos
-            screen = QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
+
+            # 用窗口中心所在屏幕判定，避免拖动过程中鼠标短暂越界
+            # 或快速跨屏导致边界基准跳变。
+            center = QPoint(
+                new_pos.x() + self.window.width() // 2,
+                new_pos.y() + self.window.height() // 2,
+            )
+            screen = QApplication.screenAt(center) or QApplication.primaryScreen()
             if screen is not None:
                 geo = screen.availableGeometry()
-                new_pos.setX(max(geo.left() + 100 - self.window.width(),
-                             min(new_pos.x(), geo.right() - 100)))
-                new_pos.setY(max(geo.top() + 100 - self.window.height(),
-                             min(new_pos.y(), geo.bottom() - 100)))
+                lo_x = geo.left() + 100 - self.window.width()
+                hi_x = geo.right() - 100
+                if lo_x <= hi_x:
+                    new_pos.setX(max(lo_x, min(new_pos.x(), hi_x)))
+                    new_pos.setY(max(geo.top() + 100 - self.window.height(),
+                                min(new_pos.y(), geo.bottom() - 100)))
             self.window.move(new_pos)
             event.accept()
 
@@ -84,10 +93,9 @@ class WindowStateManager:
 
     def close_event(self, event):
         """
-        关闭窗口 → 最小化到托盘。
-        无托盘场景由 main.py 的 closeEvent 分支负责调用 quit_app。
-        注意：Qt 的 closeEvent 不使用返回值，这里的语义完全靠
-        event.ignore() 表达。
+        关闭窗口 → 最小化到托盘。无托盘场景由 main.py 的 closeEvent
+        分支负责调用 quit_app。Qt 的 closeEvent 不使用返回值，语义
+        完全靠 event.ignore() 表达。
         """
         event.ignore()
         self.window.hide()
@@ -97,3 +105,5 @@ class WindowStateManager:
         self.config.set("pos_x", geo.left(), save=False)
         self.config.set("pos_y", geo.top(), save=False)
         self.config.flush()
+        
+        

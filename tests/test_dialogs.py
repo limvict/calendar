@@ -1,7 +1,7 @@
 # coding: utf-8
 import dialogs as dialogs_mod
 from dialogs import AddMemorialDialog
-from utils import REPEAT_WEEK, REPEAT_YEAR
+from memorial import REPEAT_WEEK, REPEAT_YEAR
 
 
 def test_add_memorial_week_forces_solar(qapp):

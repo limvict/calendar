@@ -111,7 +111,12 @@ def test_next_week_strictly_future():
 
 
 def test_lunar_dependency_absent(monkeypatch):
-    monkeypatch.setattr(mem_mod, "HAS_CHNCAL", False)
+    # 【修正】memorial 内部读的是 lunar_mod.HAS_CHNCAL，
+    # monkeypatch mem_mod.HAS_CHNCAL 不起作用。
+    monkeypatch.setattr(lunar_mod, "HAS_CHNCAL", False)
+    # 防御：清掉可能已被其他测试填充的 lru_cache，
+    # 避免旧索引在当前断言下产生干扰（可选，但更稳）。
+    lunar_mod.clear_lunar_caches()
 
     m = mem_mod.normalize_memorial(
         {

@@ -1,27 +1,22 @@
 # coding: utf-8
-# ⚠️ 本文件有改动：P2-2 删除死代码 SOLAR_TERMS / UPCOMING_REMIND_DAYS
-# 主题配置 - 莫兰迪柔和配色
 import copy
 import json
 import os
-from config import get_resource_path,get_logger
+from config import get_resource_path, get_logger
+
 logger = get_logger()
 
-# ===== 【FIX-6】月份天数校验基准年 =====
-# 必须是闰年，保证 2 月有 29 天。
-# 用途：
-#   * memorial.normalize_memorial —— 公历每年重复时按此年收敛日上限
-#   * dialogs.AddMemorialDialog._on_accept —— 公历日期合法性校验
-# 两处必须共用同一常量，否则会出现"UI 允许 2/29 但 normalize 收敛到 2/28"
-# 这类不一致。tests/test_constants.py 有 assert calendar.isleap() 保护。
+# 月份天数校验基准年，必须为闰年（2 月 29 天）。
+# memorial.normalize_memorial 与 dialogs.AddMemorialDialog._on_accept
+# 必须共用此常量，否则会出现"UI 允许 2/29 但 normalize 收敛到 2/28"。
 REFERENCE_LEAP_YEAR = 2024
 
-# 你的默认主题常量
 DEFAULT_THEME = {
     "window_width": 440,
     "window_height": 480,
     "font_family": "微软雅黑,SimHei,sans-serif",
     "font_size": 13,
+    "small_font_size": 9,
     "week_header_font_size": 12,
     "bg_main": "#F7F3ED",
     "border_color": "#D8D2C5",
@@ -45,12 +40,15 @@ DEFAULT_THEME = {
     "normal_num_color": "#555555",
     "normal_lunar_color": "#808080",
 
-    # ===== 【Item 2】相邻月单元格 =====
+    "btn_bg": "#b4c3b0",
+    "btn_hover": "#98aa93",
+    "btn_pressed": "#82947d",
+    "btn_text": "#ffffff",
+
     "adjacent_cell_bg": "#E9E6E1",
     "adjacent_text_color": "#BBBBBB",
 
-    # ===== 【Item 2】单元格尺寸 =====
-    # 注意：不与上面的 window 圆角 "corner_radius" 冲突
+    # 与窗口圆角 "corner_radius" 不冲突
     "cell_corner_radius": 8,
     "dot_size": 6,
     "tag_size": 14,
@@ -58,12 +56,9 @@ DEFAULT_THEME = {
     "tag_text_color": "#FFFFFF",
 }
 
+
 def load_theme(theme_path: str = None) -> dict:
-    """
-    加载主题配置：优先读取外部文件，加载失败则返回默认主题。
-    """
-    # 【P2-3】deepcopy 替代浅拷贝：当前扁平字典无所谓，
-    # 但未来若引入嵌套主题（如 {"colors": {...}}），浅拷贝会埋坑。
+    """加载主题配置：优先读取外部文件，失败则返回默认主题。"""
     theme = copy.deepcopy(DEFAULT_THEME)
 
     if theme_path is None:
@@ -84,17 +79,18 @@ def load_theme(theme_path: str = None) -> dict:
     except Exception as e:
         logger.warning(f"加载主题文件时发生未知错误，使用默认主题：{e}")
         return theme
+
     if not isinstance(custom_theme, dict):
         logger.warning(
             f"主题文件内容不是 JSON 对象（实际为 {type(custom_theme).__name__}），"
-            f"使用默认主题"
-        )
+            f"使用默认主题")
         return theme
+
     unknown_keys = set(custom_theme) - set(DEFAULT_THEME)
     if unknown_keys:
         logger.warning(
-            f"主题文件中存在未知配置项，已忽略：{', '.join(sorted(unknown_keys))}"
-        )
+            f"主题文件中存在未知配置项，已忽略：{', '.join(sorted(unknown_keys))}")
+
     for key, value in custom_theme.items():
         if key not in DEFAULT_THEME:
             continue
@@ -103,6 +99,7 @@ def load_theme(theme_path: str = None) -> dict:
             continue
         theme[key] = value
     return theme
+
 
 # 农历传统节日（月,日）-> 名称，只对这些文字标红
 LUNAR_FESTIVALS = {
@@ -132,20 +129,13 @@ FESTIVAL_NAME_MAP = {
     "国庆节": "国庆节",
 }
 
-# 【P2-2】删除以下死代码：
-#   SOLAR_TERMS = [...]           # 节气走 lunar.todaySolarTerms，本常量无引用
-#   UPCOMING_REMIND_DAYS = 7      # 无任何引用
-
-# ===== 【修复 2】法定节日里需要标红的名称 =====
-# 原实现 RED_TEXT_SET 只来自 LUNAR_FESTIVALS.values()，
-# 导致「清明节」（不在农历传统节日表里）被当成灰色。
-# 这里把全部法定节日名归一化后统一加入红字集合。
+# 法定节日里需要标红的名称。RED_TEXT_SET 需同时包含农历传统节日
+# 与法定节日，否则「清明节」（不在农历传统节日表里）会被当成灰色。
 LEGAL_HOLIDAY_RED = {
     "元旦", "春节", "清明节", "劳动节",
     "端午节", "中秋节", "国庆节",
 }
 
-# 标红的节日集合（农历传统节日 ∪ 法定节日）
 RED_TEXT_SET = set(LUNAR_FESTIVALS.values()) | LEGAL_HOLIDAY_RED
 
 # 农历月份中文
@@ -161,3 +151,31 @@ NUM_CN_MAP = {
     "21": "廿一", "22": "廿二", "23": "廿三", "24": "廿四", "25": "廿五",
     "26": "廿六", "27": "廿七", "28": "廿八", "29": "廿九", "30": "三十",
 }
+
+# constants.py
+
+_BOOL_TRUE_STR = frozenset(("true", "1", "yes", "on"))
+_BOOL_FALSE_STR = frozenset(("false", "0", "no", "off", ""))
+
+
+def to_bool(val, default: bool = False) -> bool:
+    """
+    把 JSON 里的各种"布尔表示"归一化。
+
+    - bool 直接返回
+    - int/float 按 0/非 0 判定
+    - str 在 true/false 集合里查表，不在集合内返回 default
+    - 其它类型返回 default
+    """
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, (int, float)):
+        return val != 0
+    if isinstance(val, str):
+        low = val.strip().lower()
+        if low in _BOOL_TRUE_STR:
+            return True
+        if low in _BOOL_FALSE_STR:
+            return False
+        return default
+    return default

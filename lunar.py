@@ -26,10 +26,13 @@ __all__ = [
     "get_lunar_by_datetime",
     "lunar_to_gregorian",
     "qdate_to_pydate",
+    "clear_lunar_caches",
+    "warmup_lunar_index",  
 ]
 
 DateLike = Union[date, datetime, Tuple[int, int, int], List[int]]
 LunarKey = Tuple[int, int, bool]
+
 
 # ===================== 节假日本地库 =====================
 HAS_CHINESE_CAL: bool
@@ -37,38 +40,56 @@ HAS_CHINESE_CAL: bool
 try:
     from chinese_calendar import is_holiday as _cc_is_holiday
     from chinese_calendar import is_workday as _cc_is_workday
-
     HAS_CHINESE_CAL = True
 except Exception:  # noqa: BLE001
     logger.warning("未安装或加载 chinese_calendar 失败，使用周末降级判断")
     HAS_CHINESE_CAL = False
 
-    def _to_date(d: Any) -> date:
-        if isinstance(d, datetime):
-            return d.date()
-        if isinstance(d, date):
-            return d
-        if isinstance(d, (tuple, list)) and len(d) == 3:
-            return date(int(d[0]), int(d[1]), int(d[2]))
-        raise TypeError(f"不支持的日期类型: {type(d).__name__}")
 
-    def _cc_is_holiday(d: Any, *args: Any, **kwargs: Any) -> bool:
-        """降级：仅按周末判断，无法识别法定调休。"""
-        return _to_date(d).weekday() >= 5
+def _to_date(d: Any) -> date:
+    """把 chinese_calendar 可接受的日期输入归一化为 datetime.date。"""
+    if isinstance(d, datetime):
+        return d.date()
+    if isinstance(d, date):
+        return d
+    if isinstance(d, (tuple, list)) and len(d) == 3:
+        return date(int(d[0]), int(d[1]), int(d[2]))
+    raise TypeError(f"不支持的日期类型: {type(d).__name__}")
 
-    def _cc_is_workday(d: Any, *args: Any, **kwargs: Any) -> bool:
-        """降级：仅按周一至周五判断，无法识别法定调休。"""
-        return _to_date(d).weekday() < 5
+
+def _fallback_is_holiday(d: Any) -> bool:
+    """降级：仅按周末判断，无法识别法定调休。"""
+    return _to_date(d).weekday() >= 5
+
+
+def _fallback_is_workday(d: Any) -> bool:
+    """降级：仅按周一至周五判断，无法识别法定调休。"""
+    return _to_date(d).weekday() < 5
 
 
 def is_holiday(d: Any, *args: Any, **kwargs: Any) -> bool:
-    """判断是否为休息日。依赖可用时使用 chinese_calendar，否则按周末降级。"""
-    return bool(_cc_is_holiday(d, *args, **kwargs))
+    """
+    chinese_calendar 可用时优先使用；若其抛出异常（例如日期超出内置
+    节假日数据库范围会抛 NotImplementedError），则降级为按周末判断。
+    """
+    if HAS_CHINESE_CAL:
+        try:
+            return bool(_cc_is_holiday(d, *args, **kwargs))
+        except Exception:
+            logger.debug(
+                "chinese_calendar.is_holiday 降级 date=%r", d, exc_info=True)
+    return _fallback_is_holiday(d)
 
 
 def is_workday(d: Any, *args: Any, **kwargs: Any) -> bool:
-    """判断是否为工作日。依赖可用时使用 chinese_calendar，否则按周末降级。"""
-    return bool(_cc_is_workday(d, *args, **kwargs))
+    """同 is_holiday：chinese_calendar 抛异常时降级为按周一至周五判断。"""
+    if HAS_CHINESE_CAL:
+        try:
+            return bool(_cc_is_workday(d, *args, **kwargs))
+        except Exception:
+            logger.debug(
+                "chinese_calendar.is_workday 降级 date=%r", d, exc_info=True)
+    return _fallback_is_workday(d)
 
 
 # ===================== 农历库 =====================
@@ -76,7 +97,6 @@ HAS_CHNCAL: bool
 
 try:
     import cnlunar
-
     HAS_CHNCAL = True
 except Exception:  # noqa: BLE001
     logger.warning("未安装或加载 cnlunar 失败，农历功能不可用")
@@ -87,10 +107,17 @@ except Exception:  # noqa: BLE001
 # ===================== 农历缓存 =====================
 @lru_cache(maxsize=4096)
 def _get_lunar_cached(y: int, m: int, d: int) -> Optional[Any]:
-    """按公历年月日缓存农历对象。失败返回 None。"""
-    if not HAS_CHNCAL or cnlunar is None:
-        return None
+    """
+    按公历年月日缓存农历对象。失败返回 None。
 
+    本函数不检查 HAS_CHNCAL —— 该判断由不做缓存的入口承担，避免
+    "无库时返回的 None"被缓存后，运行时 monkeypatch HAS_CHNCAL=True
+    仍拿到旧值。两个入口：
+      - get_lunar_by_datetime（检查 HAS_CHNCAL）
+      - _build_lunar_index（由调用方 lunar_to_gregorian 检查）
+    """
+    if cnlunar is None:
+        return None
     try:
         return cnlunar.Lunar(datetime(y, m, d), godType="8char")
     except Exception:  # noqa: BLE001
@@ -104,7 +131,13 @@ def get_lunar_by_datetime(dt: DateLike) -> Optional[Any]:
 
     :param dt: datetime.date / datetime.datetime / (y, m, d) 元组或列表
     :return: cnlunar.Lunar 对象；依赖不可用或转换失败时返回 None
+
+    HAS_CHNCAL 检查放在这里（不做缓存的入口），使 monkeypatch
+    HAS_CHNCAL 后无需手动清缓存即可生效。
     """
+    if not HAS_CHNCAL:
+        return None
+
     if isinstance(dt, datetime):
         return _get_lunar_cached(dt.year, dt.month, dt.day)
     if isinstance(dt, date):
@@ -123,26 +156,19 @@ def get_lunar_by_datetime(dt: DateLike) -> Optional[Any]:
 
 
 @lru_cache(maxsize=64)
-# 【P3 修复】maxsize 32 → 64：跨年查询（如 12 月预取次年、
-# 农历每年纪念日的 forward lookahead）会同时命中相邻两个农历年
-# 的索引；扩到 64 减少换入换出，lru_cache 单条索引 ~400 天
-# × 几十字节，内存开销可忽略。
 def _build_lunar_index(lunar_year: int) -> Dict[LunarKey, date]:
     """
     构建"农历月/日/是否闰月 -> 公历 date"索引。
 
-    农历年大致跨越公历 1 月中旬至次年 2 月下旬，因此扫描该区间。
+    农历年大致跨越公历 1 月中旬至次年 2 月下旬。起点取 1 月 5 日，
+    为极端年份（含闰月跨年）留更多余量，多扫描的天数在 lru_cache
+    命中下开销可忽略。
+
+    本函数不检查 HAS_CHNCAL —— 调用方 lunar_to_gregorian 已在入口
+    处拦截无库场景。
     """
-    if not HAS_CHNCAL:
-        return {}
-
     index: Dict[LunarKey, date] = {}
-
     try:
-        # 【P3 修复】起点从 1 月 15 日提前到 1 月 5 日。
-        # 农历年最早的开始日（春节）历史极值在 1 月 21 日左右；
-        # 提前到 1 月 5 日为极端年份（含闰月跨年）留更多余量，
-        # 多扫描的天数在 lru_cache 命中下开销可忽略。
         start_date = date(lunar_year, 1, 5)
         end_date = date(lunar_year + 1, 2, 25)
     except ValueError:
@@ -164,7 +190,6 @@ def _build_lunar_index(lunar_year: int) -> Dict[LunarKey, date]:
                 continue
             index.setdefault(key, current)
         current += timedelta(days=1)
-
     return index
 
 
@@ -177,11 +202,6 @@ def lunar_to_gregorian(
 ) -> Optional[date]:
     """
     农历转公历。
-
-    :param lunar_year: 农历年
-    :param lunar_month: 农历月（1-12）
-    :param lunar_day: 农历日（1-30）
-    :param is_leap_month: 是否为闰月
     :return: 对应公历 date；依赖不可用或找不到时返回 None
     """
     if not HAS_CHNCAL:
@@ -192,8 +212,7 @@ def lunar_to_gregorian(
     except (TypeError, ValueError):
         logger.warning(
             "lunar_to_gregorian 参数无法转为整数: %r",
-            (lunar_year, lunar_month, lunar_day),
-        )
+            (lunar_year, lunar_month, lunar_day))
         return None
 
     if not (1 <= m <= 12 and 1 <= d <= 30):
@@ -205,15 +224,48 @@ def lunar_to_gregorian(
 
 def qdate_to_pydate(qdate: Any) -> date:
     """
-    将 Qt 的 QDate 转为 datetime.date。
-
     :raises TypeError: qdate 为 None 或缺少 year/month/day 方法
     :raises ValueError: 年月日不合法
     """
     if qdate is None:
         raise TypeError("qdate 不能为 None")
-
     try:
         return date(int(qdate.year()), int(qdate.month()), int(qdate.day()))
     except AttributeError as exc:
         raise TypeError(f"qdate 不是有效的 QDate: {type(qdate).__name__}") from exc
+
+
+def clear_lunar_caches() -> None:
+    """
+    清空农历相关的 LRU 缓存。
+
+    使用场景：
+    - 测试中 monkeypatch lunar.HAS_CHNCAL 后需要让新状态彻底生效
+      （入口已做 HAS_CHNCAL 检查，但缓存里若已有"无库前"的 None 条目，
+      翻回 True 后仍会命中旧 None）；
+    - 未来若支持 cnlunar 动态加载 / 卸载。
+    """
+    _get_lunar_cached.cache_clear()
+    _build_lunar_index.cache_clear()
+    lunar_to_gregorian.cache_clear()
+    
+    
+def warmup_lunar_index(years) -> None:
+    """
+    预热农历年索引。用于程序启动后异步把当年（及相邻年）的
+    "农历月/日/是否闰月 -> 公历 date" 索引构建好，避免用户首次
+    翻页 / 打开月份选择器 / 触发纪念日计算时卡顿。
+
+    一次索引构建约扫描 415 天，单线程下耗时数百毫秒；放在
+    QTimer.singleShot(0, ...) 里跑不会阻塞窗口显示。
+
+    失败静默：预热只是优化，cnlunar 不可用或异常时应让调用方
+    的正式路径去处理（正式路径有完整的降级）。
+    """
+    if not HAS_CHNCAL:
+        return
+    for y in years:
+        try:
+            _build_lunar_index(int(y))
+        except Exception:
+            logger.debug("农历索引预热失败 year=%r", y, exc_info=True)

@@ -1,120 +1,86 @@
-# 桌面农历日历
+# 桌面农历日历（Desktop Lunar Calendar）
 
-基于 **PyQt6** 的 Windows 桌面农历日历，支持公历 / 农历、二十四节气、法定节假日、周末调休（班）、纪念日提醒、主题配色、系统托盘等功能。
-
----
-
-## 功能
-
-- 📅 农历 + 公历双历显示，节气、传统节日、公历节日标注
-- 🎉 法定节假日 / 调休「班」标记，优先使用网络数据，失败时回退本地库
-- 🎂 纪念日提醒：支持公历 / 农历、每年 / 每月 / 每周重复、闰月、提前 N 天提醒
-- 🎨 莫兰迪主题，圆角无边框窗口，透明度 / 置顶可调
-- 🖥️ 系统托盘常驻，双击恢复窗口
-- ⚙️ 设置持久化，支持配置导入 / 导出
-- 🔔 提醒音效（Windows 原生 `winsound`）
+一个基于 **PyQt6** 的 Windows 桌面农历日历小工具。支持农历/节气/节日展示、
+节假日调休标注、纪念日提醒、网络节假日自动同步、系统托盘、开机自启、
+主题自定义与配置导入导出。
 
 ---
 
-## 环境要求
+## 目录
 
-- **Python** ≥ 3.9
-- **操作系统**：Windows 10/11（其它平台部分功能降级，如音效、开机自启）
+- [功能特性](#功能特性)
+- [运行环境](#运行环境)
+- [快速开始](#快速开始)
+- [项目结构](#项目结构)
+- [架构设计](#架构设计)
+- [配置说明](#配置说明)
+- [主题自定义](#主题自定义)
+- [依赖降级策略](#依赖降级策略)
+- [打包发布](#打包发布)
+- [常见问题](#常见问题)
+- [API 参考](#api-参考)
 
 ---
 
-## 安装
+## 功能特性
+
+| 功能 | 说明 |
+| --- | --- |
+| 📅 农历日历 | 农历日期、节气、传统节日、公历节日 |
+| 🎉 节假日调休 | 网络数据优先，`chinese_calendar` 兜底，周末降级 |
+| 🎂 纪念日 | 公历/农历、每年/每月/每周重复、提前 N 天提醒 |
+| 🔔 提醒弹窗 | 支持自定义提醒时段（默认 8:00–22:00）与提示音 |
+| 🌐 网络同步 | 多 CDN 降级拉取节假日数据，本地缓存 7 天 |
+| 📌 系统托盘 | 最小化到托盘、双击恢复、置顶切换 |
+| 🎨 主题 | `theme.json` 覆盖默认主题，热更新无需重启 |
+| 💾 配置管理 | 原子落盘、防抖保存、导入/导出 JSON |
+| 🚀 开机自启 | Windows 注册表 `Run` 键 |
+| 📦 数据备份 | 纪念日独立备份/恢复（JSON） |
+| 🖼️ 无边框窗口 | 可拖拽、透明度可调、位置记忆 |
+
+---
+
+## 运行环境
+
+- **Python**：3.8+
+- **操作系统**：Windows / macOS / Linux（托盘、音效、开机自启在 Windows 上功能完整）
+- **必需依赖**：
+  - `PyQt6 >= 6.4`
+
+- **可选依赖**（缺失时自动降级）：
+  - `cnlunar` — 农历 / 节气转换（缺失则日历只显示公历）
+  - `chinese_calendar` — 本地节假日判断（缺失则只按周末判断）
+
+---
+
+## 快速开始
 
 ```bash
-git clone https://github.com/limvict/calendar.git
-cd calendar
+# 1. 安装依赖
+pip install PyQt6 cnlunar chinese_calendar
 
-# 建议使用虚拟环境
-python -m venv .venv
-.venv\Scripts\activate       # Windows PowerShell
-
-pip install -r requirements.txt
-```
-
----
-
-## 运行
-
-```bash
+# 2. 运行
 python main.py
-```
 
-首次启动会自动在 `%APPDATA%\MyCalendarApp\` 下生成日志与配置。
 
----
-
-## 配置说明
-
-用户配置保存在：
-
-```
-%APPDATA%\MyCalendarApp\config.json
-```
-
-> ⚠️ `config.json` 含个人纪念日、窗口位置等信息，**不纳入版本控制**（已在 `.gitignore` 中排除）。
-
-如果需要参考配置结构，见仓库中的 `config.example.json`（如有）。
-
----
-
-## 开发与测试
-
-安装测试依赖：
-
-```bash
-pip install -r requirements-dev.txt
-```
-
-运行测试：
-
-```bash
-pytest
-```
-
----
-
-## 依赖
-
-| 包 | 用途 |
-|---|---|
-| `PyQt6` | GUI 框架 |
-| `cnlunar` | 农历 / 节气计算 |
-| `chinesecalendar` | 法定节假日 / 调休判断（本地回退） |
-
----
-
-## 目录结构
-
-```
-calendar/
-├── main.py                    # 程序入口，主窗口
-├── calendar_widget.py         # 自定义日历控件
-├── config.py                  # 配置管理器单例
-├── constants.py               # 常量与默认主题
-├── dialogs.py                 # 各类弹窗
-├── event_bus.py               # 全局事件总线
-├── holiday_manager.py         # 节假日数据管理
-├── lunar.py                   # 农历 / 节假日互转
-├── memorial.py                # 纪念日归一化与匹配
+项目结构
+.
+├── main.py                    # 主入口：主窗口 + 跨模块调度
+├── calendar_widget.py         # 自定义日历控件（农历/节日/纪念日渲染）
+├── config.py                  # ConfigManager 单例 + 日志系统
+├── constants.py               # 默认主题、节日表、布尔归一化
+├── dialogs.py                 # 全部对话框
+├── event_bus.py               # 发布-订阅事件总线
+├── holiday_manager.py         # 节假日缓存 / 网络 / 刷新
+├── lunar.py                   # 农历 / 节假日 / 公农历互转（含降级）
+├── memorial.py                # 纪念日归一化 / 匹配 / 下次日期计算
 ├── memorial_data_manager.py   # 纪念日备份 / 恢复
-├── network.py                 # 网络节假日拉取
-├── reminder_manager.py        # 提醒调度
-├── sound_manager.py           # 音效播放
-├── style_manager.py           # 主题样式
+├── network.py                 # 网络节假日拉取（多 CDN）
+├── reminder_manager.py        # 纪念日提醒调度
+├── sound_manager.py           # Windows 音效播放
+├── style_manager.py           # UI 样式统一刷新
 ├── tray_manager.py            # 系统托盘
-├── utils.py                   # 向后兼容层
-├── window_state_manager.py    # 窗口状态（拖拽 / 置顶 / 透明度）
-├── assets/                    # 图标与音效
-└── tests/                     # 单元测试
-```
-
----
-
-## 许可证
-
-本项目仅供个人使用与学习交流。
+├── utils.py                   # 启动期配置默认值初始化
+├── window_state_manager.py    # 拖拽 / 置顶 / 透明度 / 位置记忆
+├── assets/                    # 图标、音效
+└── theme.json                 # 可选自定义主题
